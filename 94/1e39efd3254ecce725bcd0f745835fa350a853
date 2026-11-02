@@ -1,0 +1,21 @@
+docs/device-validation.md
+  s_9596269565dfac::t_1dfcc6f4cd93d0 5-16
+docs/architecture.md
+  s_9596269565dfac::t_1dfcc6f4cd93d0 28-29
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "development:1.7.3",
+  "base_commit_sha": "941e39efd3254ecce725bcd0f745835fa350a853",
+  "prompts": {},
+  "sessions": {
+    "s_9596269565dfac": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a19c67-b563-7e60-a982-d95a172ea6cf",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "AI_BA <ai_ball@outlook.com>"
+    }
+  }
+}
