@@ -126,6 +126,21 @@ class DeviceSmoke:
             time.sleep(2)
         raise RuntimeError('Official Termux did not finish first-launch initialization within 180s')
 
+    def select_default_mirror_fixture(self):
+        if not self.emulator_verified:
+            raise RuntimeError('Mirror fixtures require a verified disposable emulator')
+        default = 'files/usr/etc/termux/mirrors/default'
+        contents = self.read_private(default, TERMUX)
+        if not contents or b'MAIN="https://packages-cf.termux.dev/apt/termux-main"' not in contents.splitlines():
+            raise RuntimeError('Official Termux default mirror configuration is unavailable')
+        target = '/data/data/' + TERMUX + '/' + default
+        selected = 'files/usr/etc/termux/chosen_mirrors'
+        self.command('shell', 'run-as', TERMUX, '/system/bin/ln', '-sfn', target, selected)
+        link = self.command('exec-out', 'run-as', TERMUX, '/system/bin/readlink', selected).stdout.decode().strip()
+        if link != target:
+            raise RuntimeError('Disposable Termux fixture did not select the official default mirror')
+        self.record('PASS: disposable Termux fixture selected official packages-cf default mirror; runtime packages remain uninstalled')
+
     def set_external_commands(self, allowed: bool):
         # This test only writes a disposable emulator's freshly installed Termux.
         self.command('shell', 'run-as', TERMUX, 'mkdir', '-p', 'files/home/.termux')
@@ -199,12 +214,35 @@ class DeviceSmoke:
         pid = pid_file.decode().strip() if pid_file else ''
         if not pid.isdigit():
             raise RuntimeError('Termux server process marker is missing')
-        alive = self.command('shell', 'run-as', TERMUX, '/system/bin/kill', '-0', pid, check=False)
-        if alive.returncode:
-            raise RuntimeError('Managed server is not alive under the Termux UID')
-        cross_uid = self.command('shell', 'run-as', APP, '/system/bin/kill', '-0', pid, check=False)
-        if cross_uid.returncode == 0:
-            raise RuntimeError('Managed server unexpectedly shares the Android host UID')
+        termux_uid = self.command('exec-out', 'run-as', TERMUX, '/system/bin/id', '-u').stdout.decode().strip()
+        host_uid = self.command('exec-out', 'run-as', APP, '/system/bin/id', '-u').stdout.decode().strip()
+        status = self.read_private(f'/proc/{pid}/status', TERMUX)
+        command_line = self.read_private(f'/proc/{pid}/cmdline', TERMUX)
+        base = '/data/data/' + TERMUX + '/' + TERMUX_ROOT
+        self.validate_server_process(status, command_line, termux_uid, host_uid,
+                                     base + '/versions/' + self.runtime_version + '/bin/pi-pocket.js',
+                                     base + '/data')
+
+    @staticmethod
+    def validate_server_process(status: bytes | None, command_line: bytes | None,
+                                termux_uid: str, host_uid: str, entry: str, data: str):
+        # Android's runas_app SELinux domain may read the process but cannot use
+        # kill(pid, 0) on the app domain, even with the same Linux UID.
+        if not termux_uid.isdigit() or not host_uid.isdigit() or termux_uid == host_uid:
+            raise RuntimeError('Termux and the Android host must have distinct Linux UIDs')
+        if status is None or command_line is None:
+            raise RuntimeError('Managed Termux process metadata is unavailable')
+        fields = status.decode('utf-8', errors='replace')
+        uids = re.search(r'^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$', fields, re.MULTILINE)
+        if not uids or any(uid != termux_uid for uid in uids.groups()):
+            actual = ','.join(uids.groups()) if uids else 'missing'
+            raise RuntimeError(f'Managed server UID mismatch: expected Termux UID {termux_uid}; actual UIDs {actual}')
+        state = re.search(r'^State:\s+(\S+)', fields, re.MULTILINE)
+        if not state or state.group(1).upper() in {'Z', 'X'}:
+            raise RuntimeError('Managed Termux server is no longer a live process')
+        arguments = command_line.decode('utf-8', errors='replace').split('\0')
+        if entry not in arguments or data not in arguments:
+            raise RuntimeError('Managed Termux PID does not identify the selected payload and data directory')
 
     def assert_service_stopped(self, token: str, seconds=20):
         deadline = time.monotonic() + seconds
@@ -252,12 +290,36 @@ class DeviceSmoke:
         result = self.command('shell', 'pidof', APP, check=False)
         self.pids.update(pid for pid in result.stdout.decode().split() if pid.isdigit())
 
+    def record_wait_progress(self, state: dict[str, str]):
+        detail = 'waiting for Termux callback'
+        for source, package, path in (
+                ('Termux setup', TERMUX, TERMUX_ROOT + '/logs/setup.log'),
+                ('host log', APP, 'files/termux-host.log')):
+            try:
+                result = self.command('exec-out', 'run-as', package, '/system/bin/tail', '-n', '1',
+                                      path, check=False, timeout=5)
+                if result.returncode == 0:
+                    line = self.redact(result.stdout.decode('utf-8', errors='replace'))
+                    line = re.sub(r'[\x00-\x1f\x7f]', ' ', line).strip()
+                    if line:
+                        detail = source + ': ' + line[:200]
+                        break
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+        request = state.get('requestNonce', '')
+        received = bool(request and request != self.launch_previous_nonce
+                        and state.get('resultNonce') == request)
+        self.record(f'WAIT: {detail}; current callback received={str(received).lower()}')
+
     def wait_ready(self, seconds: int):
         deadline = time.monotonic() + seconds
+        next_progress = time.monotonic() + 30
         while time.monotonic() < deadline:
+            state: dict[str, str] = {}
             try:
                 token = self.token()
-                failure = self.fresh_connection_error(self.connection_state(), self.launch_previous_nonce)
+                state = self.connection_state()
+                failure = self.fresh_connection_error(state, self.launch_previous_nonce)
                 if failure:
                     raise RuntimeError('Termux startup reported an error: ' + self.redact(failure))
                 if token:
@@ -266,6 +328,9 @@ class DeviceSmoke:
                         return token, json.loads(body)
             except (OSError, ValueError, subprocess.TimeoutExpired):
                 pass
+            if time.monotonic() >= next_progress:
+                self.record_wait_progress(state)
+                next_progress = time.monotonic() + 30
             time.sleep(2)
         raise RuntimeError(f'Local authenticated service did not become ready within {seconds}s')
 
@@ -429,6 +494,7 @@ class DeviceSmoke:
         termux_apk = self.download_termux()
         self.command('install', '-r', str(termux_apk), timeout=180)
         self.initialize_termux()
+        self.select_default_mirror_fixture()
         self.command('shell', 'run-as', TERMUX, 'mkdir', '-p', 'files')
         self.command('shell', 'run-as', TERMUX, '/system/bin/tee', 'files/.pipocket-coexist-sentinel',
                      input_data=SENTINEL)
