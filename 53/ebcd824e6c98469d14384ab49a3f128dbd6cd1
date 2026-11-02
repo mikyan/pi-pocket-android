@@ -1,0 +1,27 @@
+scripts/setup-runtime.sh
+  s_9596269565dfac::t_3f2451cac236a6 23,171-173,175-190,198
+scripts/device-smoke.py
+  s_9596269565dfac::t_785142057c7ebd 50,225-247,249-250,260-262
+README.md
+  s_9596269565dfac::t_de7bea86c7bb1f 73-74
+app/src/main/java/app/pipocket/android/TermuxResultReceiver.java
+  s_9596269565dfac::t_22787536ff37e0 34-37
+termux-requirements.json
+  s_9596269565dfac::t_3f2451cac236a6 6,8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "development:1.7.3",
+  "base_commit_sha": "53ebcd824e6c98469d14384ab49a3f128dbd6cd1",
+  "prompts": {},
+  "sessions": {
+    "s_9596269565dfac": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a19c67-b563-7e60-a982-d95a172ea6cf",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "AI_BA <ai_ball@outlook.com>"
+    }
+  }
+}
