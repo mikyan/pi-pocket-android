@@ -7,7 +7,9 @@ import zipfile
 ROOT = Path(__file__).resolve().parent.parent
 ASSETS = ROOT / 'app/src/main/assets'
 payload = json.loads((ASSETS / 'payload.json').read_text())
-runtime = json.loads((ROOT / 'runtime.lock.json').read_text())
+lock_name = payload.get('runtimeLock', 'runtime.lock.json')
+assert lock_name in ('runtime.lock.json', 'runtime-x86_64.lock.json')
+runtime = json.loads((ROOT / lock_name).read_text())
 upstream = json.loads((ROOT / 'upstream.lock.json').read_text())
 assert payload['piPocketCommit'] == upstream['commit']
 assert payload['piPocketVersion'] == upstream['version']
@@ -34,6 +36,7 @@ with zipfile.ZipFile(archive_path) as archive:
         assert hashlib.sha256(data).hexdigest() == package['SHA256'], filename
     assert 'nodejs-lts' in {p['Package'] for p in runtime['packages']}
     assert 'nodejs' not in {p['Package'] for p in runtime['packages']}
+    assert {'proot', 'libtalloc', 'libandroid-shmem'}.issubset({p['Package'] for p in runtime['packages']})
     checked = 0
     source = ROOT / '.cache/upstream'
     for directory in ('src', 'web', 'bin'):
@@ -44,7 +47,7 @@ with zipfile.ZipFile(archive_path) as archive:
                 checked += 1
     for filename in ('package.json', 'package-lock.json', 'LICENSE'):
         assert archive.read('share/pi-pocket/' + filename) == (source / filename).read_bytes()
-    for executable in ('bin/bash', 'bin/dpkg', 'share/pocket-host/setup-runtime.sh', 'share/pocket-host/launch-pocket.sh'):
+    for executable in ('bin/bash', 'bin/dpkg', 'bin/proot', 'libexec/proot/loader', 'share/pocket-host/setup-runtime.sh', 'share/pocket-host/launch-pocket.sh'):
         assert permissions[executable] & 0o100, executable
 print(f'PASS: {len(names)} archive files, {len(runtime["packages"])} verified Android packages, '
       f'{checked} unchanged upstream source/frontend/entry files, {len(links)} safe link paths')

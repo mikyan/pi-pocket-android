@@ -160,7 +160,7 @@ public final class MainActivity extends Activity {
     }
 
     static boolean local(Uri uri) {
-        return "http".equals(uri.getScheme()) && "127.0.0.1".equals(uri.getHost()) && uri.getPort() == 8787;
+        return "http".equals(uri.getScheme()) && "127.0.0.1".equals(uri.getHost()) && uri.getPort() == RuntimeService.PORT;
     }
 
     private void startRuntime() {

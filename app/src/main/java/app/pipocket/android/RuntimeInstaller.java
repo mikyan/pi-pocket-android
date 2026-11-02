@@ -28,16 +28,13 @@ final class RuntimeInstaller {
     interface Progress { void set(String value); }
 
     static File install(Context context, Progress progress) throws Exception {
-        if (!Arrays.asList(Build.SUPPORTED_ABIS).contains("arm64-v8a")) {
-            throw new IllegalStateException("此安装包需要 ARM64 安卓设备。");
-        }
         File files = context.getFilesDir();
-        File expected = new File("/data/data/com.termux/files");
-        if (!files.getCanonicalFile().equals(expected.getCanonicalFile())) {
-            throw new IllegalStateException("当前内置运行环境仅支持主用户中的 com.termux 安装路径。");
-        }
         JSONObject payload = readJson(context.getAssets().open("payload.json"));
         if (payload.getInt("schemaVersion") != 1) throw new IllegalStateException("不支持的运行环境版本。");
+        String architecture = payload.getString("architecture");
+        if (!Arrays.asList(Build.SUPPORTED_ABIS).contains(architecture)) {
+            throw new IllegalStateException("此安装包需要 " + architecture + " 安卓设备。");
+        }
         String checksum = payload.getString("sha256");
         if (!checksum.matches("[a-fA-F0-9]{64}")) throw new IllegalStateException("运行环境校验信息无效。");
         File prefix = new File(files, "usr");
@@ -98,11 +95,14 @@ final class RuntimeInstaller {
             for (String[] link : links) {
                 File output = safeChild(stage, link[1]);
                 mkdir(output.getParentFile());
-                validateLinkTarget(stage, output, link[0]);
-                Os.symlink(link[0], output.getAbsolutePath());
+                String target = relocateLinkTarget(stage, output, link[0]);
+                validateLinkTarget(stage, output, target);
+                Os.symlink(target, output.getAbsolutePath());
             }
             if (!new File(stage, "bin/bash").isFile() || !new File(stage, "share/pi-pocket/bin/pi-pocket.js").isFile()
-                    || !new File(stage, "share/pocket-host/setup-runtime.sh").isFile()) {
+                    || !new File(stage, "share/pocket-host/setup-runtime.sh").isFile()
+                    || !new File(stage, "bin/proot").isFile()
+                    || !new File(stage, "libexec/proot/loader").isFile()) {
                 throw new IllegalStateException("内置组件不完整，缺少引导程序或 pi-pocket。");
             }
             writeJson(new File(stage, ".pocket-payload.json"), payload);
@@ -180,6 +180,19 @@ final class RuntimeInstaller {
                 && !within(resolved, "/system") && !within(resolved, "/apex")) {
             throw new IllegalStateException("不支持的符号链接目标：" + target);
         }
+    }
+
+    private static String relocateLinkTarget(File stage, File link, String target) throws Exception {
+        String guestPrefix = RuntimeService.GUEST_PREFIX;
+        if (target.equals(guestPrefix) || target.startsWith(guestPrefix + "/")) {
+            String relative = target.equals(guestPrefix) ? "" : target.substring(guestPrefix.length() + 1);
+            java.nio.file.Path destination = stage.toPath().resolve(relative).normalize();
+            if (!destination.startsWith(stage.toPath().normalize())) throw new IllegalStateException("符号链接目标越界。");
+            // A relative target works before and after staging is renamed and
+            // cannot accidentally resolve into the separately installed Termux.
+            return link.getParentFile().toPath().relativize(destination).toString();
+        }
+        return target;
     }
 
     private static boolean within(String path, String root) { return path.equals(root) || path.startsWith(root + "/"); }

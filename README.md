@@ -2,15 +2,17 @@
 
 把固定版本的原版 [pi-pocket](https://github.com/TannerMidd/pi-pocket) 和本地运行环境装进一个 Android APK。点击图标后，应用准备内置组件、启动 pi-pocket，再直接进入它的前端；使用者无需另装 Termux，也无需输入启动命令。
 
-当前工程面向 **ARM64、Android 8.0 / API 26 及以上、设备主用户中的侧载安装**。Android 宿主使用原生 Java、前台 Service 和 WebView；运行环境包含 Termux bootstrap、Node.js、Git、shell 工具和上游生产依赖。首次展开和配置组件不要求现场下载这些依赖；调用在线模型、登录提供商及联网工具仍需要网络。
+当前工程面向 **ARM64、Android 8.0 / API 26 及以上的侧载安装**。Android 宿主使用原生 Java、前台 Service 和 WebView；运行环境包含 PRoot、Termux bootstrap、Node.js、Git、shell 工具和上游生产依赖。首次展开和配置组件不要求现场下载这些依赖；调用在线模型、登录提供商及联网工具仍需要网络。另提供 x86_64 构建用于 CI 模拟器验证。
 
 **尚未完成 Android 真机验证。** 构建成功或桌面集成测试通过，均不代表手机上的运行、任务恢复和上游全部功能已验证。语音、网页推送通知、分享接收、下载及浏览器自动化尚未完成 Android 适配；系统运行状态通知与网页推送是不同功能。验收范围见 [真机验证清单](docs/device-validation.md)。
 
 ## 安装兼容性
 
-首版 `applicationId` 使用 **`com.termux`**，因为内置官方二进制使用 `/data/data/com.termux/files/usr` 固定前缀。它不能与已有 Termux 同装；不同签名的包也不能直接覆盖安装。
+当前 `applicationId` 为 **`io.github.mikyan.pipocket`**，与官方 Termux 的 `com.termux` 是两个独立应用，可以同时安装。保留现有 Termux，无需卸载、覆盖或迁移它的数据。
 
-**已有 Termux 的设备请停止此次安装，保留原安装和数据。不要为试用本项目直接卸载 Termux。** 请选择没有安装 Termux 的备用 ARM64 设备测试。本版不支持工作资料、应用分身或次要 Android 用户；这些环境的私有目录不符合固定前缀。独立新包名需要重新构建相应运行环境，不能只改 Gradle 的 applicationId。
+内置二进制仍使用原编译前缀，但 PRoot 只在本应用的子进程中将虚拟 `/data/data/com.termux/files` 映射到本应用自己的私有目录。实际数据位于 `io.github.mikyan.pipocket` 的目录，不读取或修改另一应用的 Termux 目录；不需要 root 或外部 Termux 服务。监听端口为 `18787`，避开 pi-pocket 默认的 `8787`。PRoot 带来系统调用开销及设备兼容性边界，模拟器结果不能替代 ARM64 真机验收。
+
+历史 `0.1.0` 的同包名原型已停用，不应安装到用户手机；当前构建采用 `0.2.0` 系列。
 
 `targetSdk` 当前为 28，这是保留传统 Termux 二进制执行方式的侧载构建。它不是 Google Play 发行配置，也不承诺未来 Android 版本长期兼容。现代 targetSDK 的迁移路径见 [架构说明](docs/architecture.md)。
 
@@ -40,6 +42,22 @@ python scripts/prepare.py --source D:/Code/pi-pocket --update-runtime-lock
 
 准备阶段会生成 `app/src/main/assets/runtime.zip` 和 `payload.json`；Gradle 在打包前核对 payload SHA-256，缺少内置运行环境时会拒绝构建。调试 APK 默认输出到 `app/build/outputs/apk/debug/app-debug.apk`。这是调试签名产物；后续升级安装必须保持签名一致并增加版本号。
 
+## GitHub Actions 构建
+
+[Build Android APK](https://github.com/mikyan/pi-pocket-android/actions/workflows/build-android.yml) 会在推送到 `main`、面向 `main` 的 Pull Request，以及手动触发时运行。手动构建：打开 Actions → Build Android APK → Run workflow，选择 `main`。工作流使用 Ubuntu 24.04、Python 3.12、Node.js 24、JDK 17 和 Android SDK 36，直接按锁文件拉取 pi-pocket 并打包，不需要本地的 `D:/Code/pi-pocket`。
+
+工作流先构建一次仅用于测试的 x86_64 APK，在 Android API 35 模拟器内安装官方 Termux，再安装独立包名的 Pi Pocket。设备检查包含两包同时存在、内置运行环境配置、认证接口与原版前端 HTML、强行停止后重开并保留同一 owner，以及官方 Termux 私有测试文件未被更改。测试不发送模型请求，不等同于 ARM64 真机或运行中 Agent 任务恢复验收。模拟器检查失败时，后续 ARM64 APK 构建与发布会被阻止。
+
+设备检查通过后，再构建 ARM64 包并运行打包单元测试、离线负载和上游源码一致性检查、原版 launcher 的启动/登录/重启测试、APK 编译、Android lint 和 APK 签名校验。工作流不会更新上游或 Android 依赖锁。
+
+`main` 成功构建后，运行页面的 **Artifacts** 中会出现 `pi-pocket-android-arm64-debug-<运行编号>`，内含 APK、`SHA256SUMS.txt`、上游与运行环境锁、payload 元数据和构建记录。APK 工件保留 30 天，lint 和设备检查报告保留 14 天。仓库公开可读；GitHub Actions 工件下载仍需要登录 GitHub。Pull Request 和非 `main` 分支的手动构建只做检查，不发布 APK；x86_64 测试 APK 也不会发布。
+
+仓库使用独立、稳定的 CI 调试签名，GitHub repository secrets 为 `ANDROID_DEBUG_KEYSTORE_BASE64` 和 `ANDROID_DEBUG_KEYSTORE_PASSWORD`，alias 为 `pocket-debug`。主分支构建缺少签名 secrets 时会失败，不会悄悄发布随机签名的包。密钥不进入 Git、构建缓存或下载工件，PR 和模拟器检查也不使用它。CI 版本号为 `0.2.0-ci.<运行编号>`，versionCode 为 `1000 + 运行编号`，后续应保持同一密钥以支持覆盖升级。
+
+**此前在本机生成的测试 APK 使用本机 debug 签名，与 CI 专用签名不同。** 它们不能直接互相覆盖。已安装旧本地包时应先保留数据并安排迁移，不要为了换用 CI 包直接卸载应用。后续测试统一使用 CI 工件。
+
+Actions 自身按完整提交 SHA 固定版本；仅缓存校验过的 runtime 下载与 Gradle 依赖下载，不缓存上游工作目录或私钥。工作流定义见 [build-android.yml](.github/workflows/build-android.yml)。
+
 ## 上游与依赖锁定
 
 | 输入 | 当前约束 |
@@ -54,7 +72,7 @@ python scripts/prepare.py --source D:/Code/pi-pocket --update-runtime-lock
 
 ## 数据与任务恢复
 
-设备内持久数据位于 `/data/data/com.termux/files/home/`：
+设备内持久数据位于本应用的 `files/home/`（主用户通常为 `/data/user/0/io.github.mikyan.pipocket/files/home/`）：
 
 - `.pi-pocket/`：会话数据库、任务、配置、上传文件等。
 - `.pi/agent/`：Pi 提供商登录和相关配置。
@@ -68,9 +86,9 @@ APK 升级替换 `usr` 运行环境，保留上述 `home` 数据。切换前会�
 
 ## 验证与排查
 
-已完成本地构建验证：真实上游的 4 组 smoke 检查、3 个 Python 打包单元测试，以及 Gradle `assembleDebug`、`lintDebug` 均通过。Lint 为 0 errors / 7 warnings，主要涉及固定运行前缀、WebView JavaScript、中文字符串和版本提示。payload 审计确认 248 个 `src/web/bin` 原始文件与锁定上游一致，已检查内置 deb 的 SHA-256 和 1,170 个符号链接的路径边界。新增运行包仍须随每次重打包重新完成校验。
+每次 CI 检查打包边界、原版上游启动/登录/重启接口、源文件逐字节一致性、离线包 SHA-256、APK 签名和 Android lint。随后在 x86_64 模拟器中安装官方 Termux 与本应用，验证共存、服务启动和强行停止后重开；只有设备测试成功才发布 ARM64 APK 工件。具体结果以对应 Actions 运行记录为准。
 
-以上是构建与桌面契约验证。尚未验证 Android 真机启动，也未实测手机上 durable 任务在中断后的续跑。
+尚未验证 ARM64 真机启动，也未实测手机上 durable 模型任务在中断后的续跑。模拟器测试不会调用付费模型。
 
 桌面契约测试使用独立临时数据目录，不访问手机或用户现有服务：
 

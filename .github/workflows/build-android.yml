@@ -1,0 +1,253 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  device-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      BUILD_TOOLS_VERSION: '35.0.0'
+      PYTHONUNBUFFERED: '1'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out host project
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Set up JDK
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Ensure build SDK packages
+        run: |
+          python - <<'PY'
+          import os
+          import subprocess
+          from pathlib import Path
+          manager = Path(os.environ['ANDROID_HOME']) / 'cmdline-tools/latest/bin/sdkmanager'
+          subprocess.run([str(manager), '--licenses'], input='y\n' * 100,
+                         text=True, stdout=subprocess.DEVNULL, check=True)
+          subprocess.run([str(manager), 'platforms;android-36',
+                          'build-tools;' + os.environ['BUILD_TOOLS_VERSION']], check=True)
+          PY
+
+      - name: Cache verified x86_64 runtime downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .cache/bootstrap-x86_64.zip
+            .cache/debs
+          key: android-runtime-x86_64-${{ runner.os }}-${{ hashFiles('runtime-x86_64.lock.json') }}
+
+      - name: Prepare and audit x86_64 emulator payload
+        run: |
+          python -m unittest discover -s tests -p 'test_*.py'
+          python scripts/prepare.py --arch x86_64
+          python scripts/verify-payload.py
+
+      - name: Build disposable emulator APK without repository signing secrets
+        run: bash gradlew --no-daemon :app:assembleDebug
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Verify Termux coexistence, startup and force-stop recovery
+        uses: ReactiveCircus/android-emulator-runner@c9c93e6ba9c4194322e114c40970d5983d9a07cc # v2.38.0
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -no-snapshot -camera-back none
+          disable-animations: true
+          emulator-boot-timeout: 600
+          disk-size: 4096M
+          script: python scripts/device-smoke.py --apk app/build/outputs/apk/debug/app-debug.apk --report "$RUNNER_TEMP/device-test/report.txt"
+
+      - name: Upload scoped device-test report and screenshot
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: device-test-api35-x86_64-${{ github.run_number }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/device-test/*.txt
+            ${{ runner.temp }}/device-test/*.png
+          if-no-files-found: ignore
+          retention-days: 14
+
+  build:
+    needs: device-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      BUILD_TOOLS_VERSION: '35.0.0'
+      PYTHONUNBUFFERED: '1'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out host project
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Set up JDK and cache Gradle downloads
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+          cache-dependency-path: |
+            **/*.gradle
+            gradle/wrapper/gradle-wrapper.properties
+          cache-path: |
+            ~/.gradle/caches/modules-2
+            ~/.gradle/wrapper/dists
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+
+      - name: Ensure Android SDK packages
+        run: |
+          python - <<'PY'
+          import os
+          import subprocess
+          from pathlib import Path
+          sdkmanager = Path(os.environ['ANDROID_HOME']) / 'cmdline-tools/latest/bin/sdkmanager'
+          subprocess.run([str(sdkmanager), '--licenses'], input='y\n' * 100,
+                         text=True, stdout=subprocess.DEVNULL, check=True)
+          subprocess.run([str(sdkmanager), 'platforms;android-36',
+                          'build-tools;' + os.environ['BUILD_TOOLS_VERSION']], check=True)
+          PY
+
+      - name: Cache verified runtime downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .cache/bootstrap-aarch64.zip
+            .cache/debs
+          key: android-runtime-aarch64-${{ runner.os }}-${{ hashFiles('runtime.lock.json') }}
+
+      - name: Test packaging boundaries
+        run: python -m unittest discover -s tests -p 'test_*.py'
+
+      - name: Prepare pinned upstream and offline runtime
+        run: python scripts/prepare.py --arch aarch64
+
+      - name: Audit offline payload and unchanged upstream source
+        run: python scripts/verify-payload.py
+
+      - name: Test the original upstream launcher and restart contract
+        run: node scripts/smoke-upstream.mjs .cache/upstream
+
+      - name: Set build version
+        run: |
+          printf 'POCKET_VERSION_CODE=%s\n' "$((1000 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
+          printf 'POCKET_VERSION_NAME=0.2.0-ci.%s\n' "$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
+
+      - name: Restore repository signing key
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_DEBUG_KEYSTORE_PASSWORD }}
+        run: |
+          if [[ -z "$KEYSTORE_BASE64" || -z "$KEYSTORE_PASSWORD" ]]; then
+            echo 'Repository signing secrets are required for downloadable APKs.' >&2
+            exit 1
+          fi
+          umask 077
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/pocket-debug.jks"
+          printf 'POCKET_KEYSTORE_FILE=%s\n' "$RUNNER_TEMP/pocket-debug.jks" >> "$GITHUB_ENV"
+
+      - name: Build APK with stable repository signature
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          POCKET_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_DEBUG_KEYSTORE_PASSWORD }}
+          POCKET_KEY_ALIAS: pocket-debug
+          POCKET_KEY_PASSWORD: ${{ secrets.ANDROID_DEBUG_KEYSTORE_PASSWORD }}
+        run: bash gradlew --no-daemon :app:assembleDebug :app:lintDebug
+
+      - name: Build and lint without repository signing secrets
+        if: github.event_name == 'pull_request' || github.ref != 'refs/heads/main'
+        run: bash gradlew --no-daemon :app:assembleDebug :app:lintDebug
+
+      - name: Verify APK signature
+        run: |
+          "$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION/apksigner" verify --verbose \
+            app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Collect downloadable APK and build metadata
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          mkdir -p dist
+          apk="pi-pocket-android-${POCKET_VERSION_NAME}-arm64-debug.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk "dist/$apk"
+          cp app/src/main/assets/payload.json upstream.lock.json runtime.lock.json dist/
+          (cd dist && sha256sum "$apk" > SHA256SUMS.txt)
+          printf 'Host commit: %s\nWorkflow run: %s/%s/actions/runs/%s\nDevice gate: Android API 35 x86_64 emulator coexistence/startup/restart passed\nARM64 hardware and in-flight model-task recovery: not tested\n' \
+            "$GITHUB_SHA" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" > dist/BUILD.txt
+          printf 'APK: `%s`\n\nVersion code: `%s`\n\nAndroid API 35 x86_64 emulator gate passed. ARM64 hardware and in-flight model-task recovery remain separate tests.\n' \
+            "$apk" "$POCKET_VERSION_CODE" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload APK and integrity metadata
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pi-pocket-android-arm64-debug-${{ github.run_number }}
+          path: dist/
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload lint reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: android-lint-${{ github.run_number }}-${{ github.run_attempt }}
+          path: app/build/reports/lint-results-debug.*
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Remove temporary signing key
+        if: always()
+        run: rm -f -- "$RUNNER_TEMP/pocket-debug.jks"

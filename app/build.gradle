@@ -1,15 +1,37 @@
 plugins { id 'com.android.application' }
 
+def pocketKeystore = System.getenv('POCKET_KEYSTORE_FILE')
+if (pocketKeystore) {
+    ['POCKET_KEYSTORE_PASSWORD', 'POCKET_KEY_ALIAS', 'POCKET_KEY_PASSWORD'].each { name ->
+        if (!System.getenv(name)) throw new GradleException("Missing signing environment variable: ${name}")
+    }
+}
+
 android {
     namespace 'app.pipocket.android'
     compileSdk 36
     defaultConfig {
-        // Official Termux packages encode this prefix. Changing only this ID breaks the runtime.
-        applicationId 'com.termux'
+        // PRoot maps the packaged runtime's prefix into this app's private files directory.
+        applicationId 'io.github.mikyan.pipocket'
         minSdk 26
         targetSdk 28
-        versionCode 1
-        versionName '0.1.0'
+        versionCode Integer.parseInt(System.getenv('POCKET_VERSION_CODE') ?: '1')
+        versionName System.getenv('POCKET_VERSION_NAME') ?: '0.2.0'
+    }
+    signingConfigs {
+        if (pocketKeystore) {
+            ciDebug {
+                storeFile file(pocketKeystore)
+                storePassword System.getenv('POCKET_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('POCKET_KEY_ALIAS')
+                keyPassword System.getenv('POCKET_KEY_PASSWORD')
+            }
+        }
+    }
+    buildTypes {
+        debug {
+            if (pocketKeystore) signingConfig signingConfigs.ciDebug
+        }
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17

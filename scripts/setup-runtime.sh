@@ -1,6 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set -euo pipefail
 if [ -f "$PREFIX/share/pocket-host/configured" ]; then
+    echo PI_POCKET_RUNTIME_READY
     exit 0
 fi
 export DEBIAN_FRONTEND=noninteractive
@@ -17,3 +18,4 @@ if [ -n "$audit" ]; then
 fi
 "$PREFIX/bin/node" --input-type=module -e 'import {DatabaseSync} from "node:sqlite"; import {execFileSync} from "node:child_process"; const d=new DatabaseSync(":memory:"); d.exec("select 1"); execFileSync("bash",["-c","git --version && rg --version && fd --version && npm --version"],{stdio:"inherit"});'
 touch "$PREFIX/share/pocket-host/configured"
+echo PI_POCKET_RUNTIME_READY

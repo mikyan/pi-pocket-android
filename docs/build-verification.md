@@ -1,4 +1,6 @@
-# 本次构建记录
+# 历史 0.1.0 构建记录（已停用）
+
+以下记录只属于初始 `com.termux` 包名原型，不是当前独立包名版本的验证证据。当前版本为 `io.github.mikyan.pipocket`，构建与模拟器同装测试结果请查看 GitHub Actions；不要在已有 Termux 的手机上安装本历史 APK。
 
 日期：2026-11-02。产物：`pi-pocket-android-0.1.0-arm64-debug.apk`。
 

@@ -12,7 +12,8 @@ flowchart TD
     B --> E[setup-runtime.sh]
     E --> F[bootstrap second-stage]
     F --> G[dpkg 安装并配置依赖]
-    B --> H[launch-pocket.sh + flock]
+    B --> P[PRoot 私有路径映射]
+    P --> H[launch-pocket.sh + flock]
     H --> I[原版 pi-pocket launcher]
     I --> J[原版 server + pi durable]
     J --> K[home 中的持久会话和工作文件]
@@ -20,7 +21,7 @@ flowchart TD
     L -->|本地认证访问| J
 ```
 
-Android Java 代码只承担组件安装、进程启动、状态显示和 WebView 宿主职责。服务端、前端、任务模型与存储恢复逻辑来自固定版本的上游；Android 层不另写一个替代服务端。
+Android Java 代码只承担组件安装、进程启动、状态显示和 WebView 宿主职责。服务端、前端、任务模型与存储恢复逻辑来自固定版本的上游；Android 层不另写一个替代服务端。应用包名 `io.github.mikyan.pipocket` 与官方 Termux 独立，PRoot 将本应用的私有目录映射到内置二进制预期的虚拟前缀。
 
 ## 构建输入
 
@@ -32,9 +33,9 @@ Android Java 代码只承担组件安装、进程启动、状态显示和 WebVie
 
 1. `MainActivity` 展示准备状态并启动 `RuntimeService`。Service 立即显示系统运行状态通知。
 2. 若已存在可用 owner token，先使用该 token 请求 `/api/me`。认证成功则连接原服务，避免另起一个任务进程。
-3. 没有可复用服务时，检查端口和旧进程锁；安装器验证 ARM64、主用户固定路径、payload SHA-256。
+3. 没有可复用服务时，检查端口和旧进程锁；安装器验证 payload ABI 与设备 ABI 匹配、payload SHA-256。
 4. 文件先展开到 `usr.staging-<时间戳>`，应用清单权限，最后恢复符号链接。路径检查防止归档内容越过安装目录。
-5. 完整目录切换到 `/data/data/com.termux/files/usr` 后，执行 bootstrap 的 second-stage。它配置预装包的维护脚本，包括 termux-exec 与 alternatives。
+5. 完整目录切换到本应用 `files/usr` 后，在 PRoot 的虚拟 `/data/data/com.termux/files/usr` 中执行 bootstrap second-stage。它配置预装包的维护脚本，包括 termux-exec 与 alternatives。PRoot 本体、loader 与两个动态库在配置前从已校验 deb 提取，外层进程使用真实私有路径寻找它们。
 6. 在设备上用 bootstrap 的 `dpkg` 安装并配置全部内置 `.deb`。因此包数据库、脚本、证书、链接和权限由实际包管理过程处理。
 7. 安装脚本审计 dpkg 状态，并验证 Node 内建 SQLite、子进程调用及 git/ripgrep/fd/npm，成功后写入本运行环境的 `configured` 标记。这些设备端自检代码尚待真机实际运行验证。
 8. `launch-pocket.sh` 使用 `flock` 持有 `home/.pi-pocket/android-host.lock`，启动原版 `bin/pi-pocket.js`。
@@ -43,7 +44,7 @@ Android Java 代码只承担组件安装、进程启动、状态显示和 WebVie
 
 ## 后端启动与认证
 
-launcher 使用以下公开配置：本地访问、监听 `127.0.0.1:8787`、数据目录 `home/.pi-pocket`、默认工作目录 `home/workspace`，并跳过交互确认。宿主设置稳定的 HOME、PREFIX、PATH、TMPDIR 和 Termux 相关变量；`PI_POCKET_GUARD=off` 是当前 Android 兼容设置。
+launcher 使用以下公开配置：本地访问、监听 `127.0.0.1:18787`、数据目录 `home/.pi-pocket`、默认工作目录 `home/workspace`，并跳过交互确认。宿主设置稳定的 HOME、PREFIX、PATH、TMPDIR 和环境变量；`PI_POCKET_GUARD=off` 是当前 Android 兼容设置。虚拟路径中的数据实际落在本应用私有目录；已有 Termux 的目录不作为绑定源。外层 PRoot 不使用 Termux 的 LD_PRELOAD，以避免干扰路径翻译。
 
 上游需要 Node 22.19+ 的原生 TypeScript 支持、`node:sqlite` 和 `child_process`。它的 launcher 用子进程管理 server，因此仅有能执行部分 JavaScript 的引擎不够。
 
@@ -81,10 +82,10 @@ WebView 进入 `/login?token=...`，让上游设置自身登录 Cookie，再跳�
 
 ## 已知适配边界
 
-- 官方 Termux 二进制固定前缀，使本版使用 `com.termux`；不能与 Termux 同装。
+- 应用使用独立包名与 UID；官方二进制的固定前缀通过 PRoot 进程内映射兼容。两个应用能够同装，实际子进程执行仍需模拟器及 ARM64 设备验证。
 - `targetSdk=28` 是侧载兼容路线。Android 对现代 targetSDK 限制执行可写目录的二进制；长期需要 APK 原生库目录分发或其他重新设计，不能只提高 Gradle 数字。
 - Guard 关闭，生产安装省略 optional 包与 npm 生命周期脚本。依赖这些能力的上游功能不在已验证范围。
 - 语音、网页推送通知、Android 分享接收、下载和浏览器自动化尚未适配。文件选择器已有实现，但仍需要真机验收。
-- 当前没有 Android 真机通过记录，也没有对 APK 与桌面全部功能等价的承诺。
+- 当前没有 ARM64 真机通过记录；CI x86_64 模拟器的启动和同装记录应单独引用，不等于所有手机或全部桌面功能已经验证。
 
 参考：[Android 可执行文件限制](https://developer.android.com/about/versions/10/behavior-changes-10#execute-permission)、[Termux 固定前缀与 fork](https://github.com/termux/termux-app#forking)、[Termux APKLF 方向](https://termux.dev/en/posts/general/2024/11/11/termux-selected-for-nlnet-ngi-mobifree-grant.html)、[Android 进程生命周期](https://developer.android.com/guide/components/activities/process-lifecycle)。

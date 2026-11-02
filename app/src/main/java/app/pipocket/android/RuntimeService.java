@@ -22,12 +22,18 @@ import java.net.Socket;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /** Owns the local launcher; user data stays outside the replaceable runtime. */
 public final class RuntimeService extends Service {
-    static final String ORIGIN = "http://127.0.0.1:8787";
+    static final int PORT = 18787;
+    static final String ORIGIN = "http://127.0.0.1:" + PORT;
+    static final String GUEST_FILES = "/data/data/com.termux/files";
+    static final String GUEST_PREFIX = GUEST_FILES + "/usr";
+    static final String GUEST_HOME = GUEST_FILES + "/home";
     static volatile String status = "正在启动 Pi Pocket…";
     static volatile String error;
     static volatile boolean ready;
@@ -61,18 +67,18 @@ public final class RuntimeService extends Service {
                 setStatus(RuntimeInstaller.isCurrent(this) ? "Pi Pocket 正在运行" : "已连接现有任务；完整停止应用后可安装新组件");
                 return;
             }
-            if (portInUse()) throw new IllegalStateException("本地端口 8787 已被占用或服务尚未就绪。请稍候重试；若持续出现，请在系统设置中完整停止此应用后重新打开。");
+            if (portInUse()) throw new IllegalStateException("本地端口 " + PORT + " 已被占用或服务尚未就绪。请稍候重试；若持续出现，请在系统设置中完整停止此应用后重新打开。");
             verifyRuntimeUnlocked();
             File prefix = RuntimeInstaller.install(this, this::setStatus);
             File home = new File(getFilesDir(), "home");
             File workspace = new File(home, "workspace");
             RuntimeInstaller.mkdir(workspace);
             RuntimeInstaller.mkdir(new File(prefix, "tmp"));
-            File setup = new File(prefix, "share/pocket-host/setup-runtime.sh");
             File configured = new File(prefix, "share/pocket-host/configured");
             if (!configured.isFile()) {
                 setStatus("正在配置内置 Node.js、Git 和命令行工具…");
-                Process configuration = process(prefix, home, new File(prefix, "bin/bash").getAbsolutePath(), setup.getAbsolutePath()).start();
+                Process configuration = process(prefix, home, GUEST_PREFIX + "/bin/bash",
+                    GUEST_PREFIX + "/share/pocket-host/setup-runtime.sh").start();
                 drain(configuration);
                 int result = configuration.waitFor();
                 if (result != 0 || !configured.isFile()) throw new IllegalStateException("运行环境配置失败（退出码 " + result + "）。可查看日志后重试。");
@@ -80,11 +86,11 @@ public final class RuntimeService extends Service {
             if (destroyed) return;
             setStatus("正在恢复本地会话…");
             launcher = process(prefix, home,
-                new File(prefix, "bin/bash").getAbsolutePath(),
-                new File(prefix, "share/pocket-host/launch-pocket.sh").getAbsolutePath(),
-                "--access", "local", "--host", "127.0.0.1", "--port", "8787",
-                "--data", new File(home, ".pi-pocket").getAbsolutePath(),
-                "--cwd", workspace.getAbsolutePath(), "-y").start();
+                GUEST_PREFIX + "/bin/bash",
+                GUEST_PREFIX + "/share/pocket-host/launch-pocket.sh",
+                "--access", "local", "--host", "127.0.0.1", "--port", Integer.toString(PORT),
+                "--data", GUEST_HOME + "/.pi-pocket",
+                "--cwd", GUEST_HOME + "/workspace", "-y").start();
             new Thread(() -> {
                 try { drain(launcher); }
                 catch (Exception e) { appendLog("[host] 输出读取中断：" + e.getClass().getSimpleName()); }
@@ -115,30 +121,43 @@ public final class RuntimeService extends Service {
     }
 
     private ProcessBuilder process(File prefix, File home, String... arguments) {
-        ProcessBuilder builder = new ProcessBuilder(Arrays.asList(arguments));
+        // Termux paths exist only in this child process's translated view. The
+        // actual files belong to our independent Android package and UID.
+        List<String> command = new ArrayList<>(Arrays.asList(
+            new File(prefix, "bin/proot").getAbsolutePath(),
+            "--kill-on-exit", "-L", "-r", "/",
+            "-b", getApplicationInfo().dataDir + ":/data/data/com.termux!",
+            "-b", getFilesDir().getAbsolutePath() + ":" + GUEST_FILES + "!",
+            "-w", GUEST_HOME,
+            GUEST_PREFIX + "/bin/env", "-i",
+            "HOME=" + GUEST_HOME,
+            "PREFIX=" + GUEST_PREFIX,
+            "PATH=" + GUEST_PREFIX + "/bin:/system/bin:/system/xbin",
+            "TMPDIR=" + GUEST_PREFIX + "/tmp",
+            "LANG=en_US.UTF-8", "TERM=xterm-256color",
+            "SHELL=" + GUEST_PREFIX + "/bin/bash",
+            "LD_LIBRARY_PATH=" + GUEST_PREFIX + "/lib",
+            "SSL_CERT_FILE=" + GUEST_PREFIX + "/etc/tls/cert.pem",
+            "GIT_SSL_CAINFO=" + GUEST_PREFIX + "/etc/tls/cert.pem",
+            "TERMUX__PREFIX=" + GUEST_PREFIX,
+            "TERMUX__HOME=" + GUEST_HOME,
+            "TERMUX_APP__PACKAGE_NAME=" + getPackageName(),
+            "TERMUX__APP_PACKAGE_NAME=" + getPackageName(),
+            "ANDROID__BUILD_VERSION_SDK=" + Build.VERSION.SDK_INT,
+            "ANDROID_ROOT=/system", "ANDROID_DATA=/data",
+            "PI_POCKET_GUARD=off", "NO_COLOR=1"));
+        command.addAll(Arrays.asList(arguments));
+        ProcessBuilder builder = new ProcessBuilder(command);
         builder.directory(home).redirectErrorStream(true);
         Map<String, String> env = builder.environment();
-        String fixedPrefix = "/data/data/com.termux/files/usr";
-        String fixedHome = "/data/data/com.termux/files/home";
-        env.put("HOME", fixedHome);
-        env.put("PREFIX", fixedPrefix);
-        env.put("PATH", fixedPrefix + "/bin:/system/bin:/system/xbin");
-        env.put("TMPDIR", fixedPrefix + "/tmp");
-        env.put("LANG", "en_US.UTF-8");
-        env.put("TERM", "xterm-256color");
-        env.put("SHELL", fixedPrefix + "/bin/bash");
-        env.put("LD_LIBRARY_PATH", fixedPrefix + "/lib");
-        env.put("SSL_CERT_FILE", fixedPrefix + "/etc/tls/cert.pem");
-        env.put("GIT_SSL_CAINFO", fixedPrefix + "/etc/tls/cert.pem");
-        env.put("TERMUX__PREFIX", fixedPrefix);
-        env.put("TERMUX__HOME", fixedHome);
-        env.put("TERMUX__APP_PACKAGE_NAME", "com.termux");
-        env.put("ANDROID__BUILD_VERSION_SDK", Integer.toString(Build.VERSION.SDK_INT));
-        env.put("PI_POCKET_GUARD", "off");
-        env.put("NO_COLOR", "1");
-        File exec = new File(prefix, "lib/libtermux-exec.so");
-        if (exec.isFile()) env.put("LD_PRELOAD", fixedPrefix + "/lib/libtermux-exec.so");
-        else env.remove("LD_PRELOAD");
+        env.remove("LD_PRELOAD");
+        env.put("LD_LIBRARY_PATH", new File(prefix, "lib").getAbsolutePath());
+        env.put("PROOT_LOADER", new File(prefix, "libexec/proot/loader").getAbsolutePath());
+        File loader32 = new File(prefix, "libexec/proot/loader32");
+        if (loader32.isFile()) env.put("PROOT_LOADER_32", loader32.getAbsolutePath());
+        else env.remove("PROOT_LOADER_32");
+        env.put("PROOT_TMP_DIR", new File(prefix, "tmp").getAbsolutePath());
+        env.put("PROOT_NO_SECCOMP", "1");
         return builder;
     }
 
@@ -151,8 +170,8 @@ public final class RuntimeService extends Service {
         File lock = new File(home, ".pi-pocket/android-host.lock");
         File flock = new File(prefix, "bin/flock");
         if (!lock.exists() || !flock.isFile()) return;
-        Process probe = process(prefix, home, flock.getAbsolutePath(), "--exclusive", "--nonblock",
-            lock.getAbsolutePath(), new File(prefix, "bin/true").getAbsolutePath()).start();
+        Process probe = process(prefix, home, GUEST_PREFIX + "/bin/flock", "--exclusive", "--nonblock",
+            GUEST_HOME + "/.pi-pocket/android-host.lock", GUEST_PREFIX + "/bin/true").start();
         if (!probe.waitFor(5, TimeUnit.SECONDS)) {
             probe.destroy();
             throw new IllegalStateException("无法确认后台进程状态。请在系统设置中完整停止此应用后重试。");
@@ -226,7 +245,7 @@ public final class RuntimeService extends Service {
 
     private boolean portInUse() {
         try (Socket socket = new Socket()) {
-            socket.connect(new InetSocketAddress("127.0.0.1", 8787), 500);
+            socket.connect(new InetSocketAddress("127.0.0.1", PORT), 500);
             return true;
         } catch (Exception ignored) { return false; }
     }

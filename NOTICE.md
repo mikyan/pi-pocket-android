@@ -1,6 +1,6 @@
 # 第三方组件与分发记录
 
-本项目是 pi-pocket 的独立 Android 宿主，未修改锁定的上游源码，不是官方 Termux 发行版。`com.termux` 包名用于当前二进制运行前缀兼容，不表示官方背书。
+本项目是 pi-pocket 的独立 Android 宿主，未修改锁定的上游源码，不是官方 Termux 发行版。应用包名为 `io.github.mikyan.pipocket`；PRoot 内部兼容的 `com.termux` 虚拟路径不表示共享官方 Termux 的应用身份或数据。
 
 ## 已知输入与声明位置
 
@@ -9,6 +9,7 @@
 | pi-pocket | [TannerMidd/pi-pocket](https://github.com/TannerMidd/pi-pocket)，版本/提交见 `upstream.lock.json` | 上游 `LICENSE`，MIT，Copyright (c) 2026 Tanner Middleton；随源码保留 |
 | pi durable 与 npm 生产依赖 | 固定上游 `package-lock.json` | 各 npm 包的 LICENSE/NOTICE/package.json；随实际生产依赖保留 |
 | Termux bootstrap | `runtime.lock.json` 中固定发布 URL 与 SHA-256 | bootstrap 中 `share/doc`、`share/LICENSES` 及包记录 |
+| PRoot、libtalloc、libandroid-shmem | Termux 包仓库，固定版本与 SHA-256 见运行锁文件 | 原始 deb 中许可证与声明随包保留 |
 | Node.js、Git、bash、GNU 工具与其他 Android 包 | [Termux 包仓库](https://github.com/termux/termux-packages)，完整二进制版本与 SHA-256 见 `runtime.lock.json` | 各包自己的许可证与版权声明；不能统一标记为 MIT |
 | Android Gradle 构建工具 | 根 `build.gradle` 与 Gradle wrapper 配置 | 各工具的上游许可 |
 
