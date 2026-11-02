@@ -31,7 +31,10 @@ public final class TermuxResultReceiver extends BroadcastReceiver {
             if (!success || result == null || "error".equals(result.optString("status"))) {
                 String detail = result == null ? bundle.getString("errmsg", "") : result.optString("message");
                 String diagnostic = result == null ? bundle.getString("stderr", "") : result.optString("diagnostic", bundle.getString("stderr", ""));
-                failure = "Termux 执行失败。请确认 allow-external-apps=true，且 Termux 可正常打开。\n" + detail + "\n" + diagnostic;
+                String heading = result == null
+                    ? "Termux 未完成命令。请确认 allow-external-apps=true，且 Termux 可正常打开。"
+                    : "Pi Pocket 在 Termux 中准备或启动失败，请查看下面的具体原因。";
+                failure = heading + "\n" + detail + "\n" + diagnostic;
             } else if ("ping".equals(phase) && "accepted".equals(result.optString("status"))) {
                 saved.edit().putString("acceptedNonce", nonce).commit();
                 return;

@@ -3,8 +3,9 @@
   "runtime": "termux",
   "packageName": "com.termux",
   "testedNodeMajor": 24,
-  "nodePolicy": "Keep an existing Node.js that satisfies payload.minimumNode and supports node:sqlite; install nodejs-lts only if Node.js is absent. An older Node.js requires the user to upgrade it explicitly.",
+  "nodePolicy": "Keep an existing Node.js that satisfies payload.minimumNode and supports node:sqlite. Only when Node.js is absent, install nodejs-lts and npm together with nodeSupportPackages so an old Termux bootstrap cannot supply ABI-incompatible libraries. If an existing Node.js fails with an explicit Android linker error, repair only nodeSupportPackages and recheck Node.js. Other failures or an older Node.js require the user to repair or upgrade their chosen Node.js explicitly; never run a global pkg upgrade.",
   "nodePackageWhenMissing": "nodejs-lts",
+  "nodeSupportPackages": ["libc++", "openssl", "c-ares", "libicu", "libsqlite", "zlib"],
   "packages": ["npm", "git", "ripgrep", "fd", "curl", "tar", "coreutils", "util-linux"],
   "requiredExistingCommands": ["bash", "pkg"]
 }

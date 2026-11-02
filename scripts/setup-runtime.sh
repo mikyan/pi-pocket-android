@@ -20,7 +20,7 @@ failure() {
     local code="$1"
     trap - ERR
     : > "$CONNECTION.error"
-    if command -v node >/dev/null 2>&1; then
+    if command -v node >/dev/null 2>&1 && node --version >/dev/null 2>&1; then
         node - "$BASE" "$STAGE" "$code" >&3 2>/dev/null <<'JS' || true
 const fs = require('node:fs');
 const [base, stage, code] = process.argv.slice(2);
@@ -168,7 +168,26 @@ fi
 
 STAGE='Checking Node.js compatibility'
 missing=()
+# Termux's old bootstrap may satisfy unversioned Depends with ABI-incompatible
+# libraries. Scope repairs to nodejs-lts's direct support packages, never pkg upgrade.
+node_support_packages=(libc++ openssl c-ares libicu libsqlite zlib)
 if command -v node >/dev/null 2>&1; then
+    if node_version_output="$(node --version 2>&1)"; then
+        :
+    else
+        printf '%s\n' "$node_version_output" >&2
+        node_linker_error="${node_version_output,,}"
+        if [[ "$node_linker_error" == *"cannot link executable"* \
+                || "$node_linker_error" == *"cannot locate symbol"* \
+                || "$node_linker_error" =~ library[[:space:]].*not[[:space:]]found ]]; then
+            STAGE='Repairing only Node.js direct supporting libraries after an Android linker error'
+            pkg install -y "${node_support_packages[@]}"
+            node --version || die 'Node.js still cannot start after repairing its supporting libraries. Check the Termux package installation; Pi Pocket did not replace Node.js.'
+            STAGE='Checking Node.js compatibility'
+        else
+            die 'The existing Node.js cannot start. Repair your chosen nodejs/nodejs-lts package in Termux, then retry; Pi Pocket will not replace it automatically.'
+        fi
+    fi
     node - "$POCKET_MINIMUM_NODE" <<'JS' || die 'The existing Node.js is too old or lacks node:sqlite. Upgrade your chosen nodejs/nodejs-lts package in Termux, then retry; Pi Pocket will not replace it automatically.'
 const actual = process.versions.node.split('.').map(Number), minimum = process.argv[2].split('.').map(Number);
 let newer = false;
@@ -176,7 +195,7 @@ for (let i=0; i<3; i++) { if (actual[i] > minimum[i]) { newer = true; break; } i
 const {DatabaseSync} = require('node:sqlite'); const db = new DatabaseSync(':memory:'); db.exec('select 1'); db.close();
 JS
 else
-    missing+=(nodejs-lts npm)
+    missing+=(nodejs-lts npm "${node_support_packages[@]}")
 fi
 for pair in 'git:git' 'rg:ripgrep' 'fd:fd' 'curl:curl' 'tar:tar' 'sha256sum:coreutils' 'base64:coreutils' 'npm:npm'; do
     command_name="${pair%%:*}"; package="${pair#*:}"

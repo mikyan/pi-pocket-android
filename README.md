@@ -70,6 +70,8 @@ Release 提供通用 APK、SHA256SUMS、上游锁、Termux 要求、payload 元�
 
 Android 8.0 / API 26 起的侧载应用，目前保留 targetSdk 28。Termux 本身也需要支持设备和 Android 版本。已安装的 Node 必须支持上游最低版本和 `node:sqlite`；过旧环境需按错误提示升级。
 
+旧 Termux 初始环境可能带有不兼容新版 Node 的共享库。首次安装 Node 时会同步更新它的六个直接支持库；已安装的 Node 仅在明确出现 Android 链接器错误时尝试定向修复这些库。范围记录在 `termux-requirements.json`，不执行全局 `pkg upgrade`。
+
 当前使用 `PI_POCKET_GUARD=off`，不包含 optional npm 包或生命周期脚本。语音、网页推送、Android 分享接收、下载及浏览器自动化尚未完整适配。实际通过的设备、版本和检查以对应 Actions 及 [设备验收记录](docs/device-validation.md) 为准，不把模拟器通过等同于所有手机或进行中模型任务恢复通过。
 
 更多说明：[运行架构](docs/architecture.md) · [第三方组件](NOTICE.md)。

@@ -47,6 +47,7 @@ class DeviceSmoke:
         self.serial = os.environ.get('ANDROID_SERIAL', '')
         self.emulator_verified = False
         self.runtime_version: str | None = None
+        self.launch_previous_nonce: str | None = None
         # Do not let a shell/runner HTTP proxy receive local owner credentials.
         self.http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -221,7 +222,32 @@ class DeviceSmoke:
         with self.http.open(request, timeout=3) as response:
             return response.status, response.read(), response.headers.get('Content-Type', '')
 
+    @staticmethod
+    def parse_connection_state(xml: bytes | None) -> dict[str, str]:
+        # Never expose or retain the complete preferences, which also contain ownerToken.
+        if xml is None:
+            return {}
+        try:
+            root = ET.fromstring(xml)
+        except (ET.ParseError, UnicodeDecodeError):
+            return {}
+        fields = {'requestNonce', 'resultNonce', 'resultError'}
+        return {node.get('name'): node.text or '' for node in root.findall('string')
+                if node.get('name') in fields}
+
+    def connection_state(self) -> dict[str, str]:
+        return self.parse_connection_state(self.read_private('shared_prefs/termux-connection.xml'))
+
+    @staticmethod
+    def fresh_connection_error(state: dict[str, str], previous_nonce: str | None) -> str | None:
+        request = state.get('requestNonce', '')
+        if request and request != previous_nonce and state.get('resultNonce') == request:
+            return state.get('resultError') or None
+        return None
+
     def start(self):
+        self.launch_previous_nonce = None
+        self.launch_previous_nonce = self.connection_state().get('requestNonce')
         self.command('shell', 'am', 'start', '-W', '-n', ACTIVITY, timeout=30)
         result = self.command('shell', 'pidof', APP, check=False)
         self.pids.update(pid for pid in result.stdout.decode().split() if pid.isdigit())
@@ -231,6 +257,9 @@ class DeviceSmoke:
         while time.monotonic() < deadline:
             try:
                 token = self.token()
+                failure = self.fresh_connection_error(self.connection_state(), self.launch_previous_nonce)
+                if failure:
+                    raise RuntimeError('Termux startup reported an error: ' + self.redact(failure))
                 if token:
                     status, body, _ = self.request('/api/me', token)
                     if status == 200:
