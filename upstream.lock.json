@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "repository": "https://github.com/TannerMidd/pi-pocket.git",
-  "commit": "50194aa38eb368ef2cb8599d44fba81b05ed5263",
-  "version": "0.27.0",
+  "commit": "284559cdc4cfb07b0b3f9d6882684e77a58e575b",
+  "version": "0.29.0",
   "minimumNode": "22.19.0",
-  "releaseTag": "v0.27.0",
-  "releaseUrl": "https://github.com/TannerMidd/pi-pocket/releases/tag/v0.27.0"
+  "releaseTag": "v0.29.0",
+  "releaseUrl": "https://github.com/TannerMidd/pi-pocket/releases/tag/v0.29.0"
 }
