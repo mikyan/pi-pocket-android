@@ -36,12 +36,12 @@ final class AssetTransfer implements Closeable {
 
     AssetTransfer(Context context) throws Exception {
         this.context = context.getApplicationContext();
-        try (AssetFileDescriptor descriptor = context.getAssets().openFd("pocket.tar.gz")) {
+        try (AssetFileDescriptor descriptor = context.getAssets().openFd("pocket.tgz")) {
             length = descriptor.getLength();
         }
         byte[] random = new byte[32];
         new SecureRandom().nextBytes(random);
-        path = "/" + Base64.encodeToString(random, Base64.URL_SAFE | Base64.NO_WRAP | Base64.NO_PADDING) + "/pocket.tar.gz";
+        path = "/" + Base64.encodeToString(random, Base64.URL_SAFE | Base64.NO_WRAP | Base64.NO_PADDING) + "/pocket.tgz";
         listener = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"));
         listener.setSoTimeout(1000);
         expiry = TIMER.schedule(this::close, 15, TimeUnit.MINUTES);
@@ -87,7 +87,7 @@ final class AssetTransfer implements Closeable {
                     output.write(("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n"
                         + "Cache-Control: no-store\r\nConnection: close\r\nContent-Length: " + length + "\r\n\r\n")
                         .getBytes(StandardCharsets.US_ASCII));
-                    try (InputStream asset = context.getAssets().open("pocket.tar.gz")) {
+                    try (InputStream asset = context.getAssets().open("pocket.tgz")) {
                         byte[] buffer = new byte[65536];
                         for (int count; (count = asset.read(buffer)) != -1;) output.write(buffer, 0, count);
                     }

@@ -15,7 +15,7 @@ final class TermuxPayload {
     TermuxPayload(Context context) throws Exception {
         manifest = new JSONObject(readAsset(context, "payload.json", 65536));
         if (manifest.getInt("schemaVersion") != 2 || !"termux".equals(manifest.getString("runtime"))
-                || !"pocket.tar.gz".equals(manifest.getString("archive"))) {
+                || !"pocket.tgz".equals(manifest.getString("archive"))) {
             throw new IllegalStateException("需要 Termux 模式的完整 Pi Pocket 安装包。");
         }
         version = manifest.getString("runtimeVersion");

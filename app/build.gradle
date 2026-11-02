@@ -37,17 +37,17 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
-    androidResources { noCompress += ['gz'] }
+    androidResources { noCompress += ['tgz'] }
 }
 
 tasks.register('verifyPayload') {
     doLast {
         def assets = file('src/main/assets')
-        if (!new File(assets, 'pocket.tar.gz').isFile() || !new File(assets, 'payload.json').isFile()) {
+        if (!new File(assets, 'pocket.tgz').isFile() || !new File(assets, 'payload.json').isFile()) {
             throw new GradleException('Run python scripts/prepare.py first to package the pinned upstream source and JavaScript dependencies.')
         }
         def manifest = new groovy.json.JsonSlurper().parse(new File(assets, 'payload.json'))
-        if (manifest.schemaVersion != 2 || manifest.runtime != 'termux' || manifest.archive != 'pocket.tar.gz') {
+        if (manifest.schemaVersion != 2 || manifest.runtime != 'termux' || manifest.archive != 'pocket.tgz') {
             throw new GradleException('Expected a Termux integration payload (schema 2)')
         }
         def upstream = new groovy.json.JsonSlurper().parse(rootProject.file('upstream.lock.json'))
@@ -66,7 +66,7 @@ tasks.register('verifyPayload') {
             throw new GradleException('Remove the obsolete bundled runtime.zip before building')
         }
         def digest = java.security.MessageDigest.getInstance('SHA-256')
-        new File(assets, 'pocket.tar.gz').withInputStream { input ->
+        new File(assets, 'pocket.tgz').withInputStream { input ->
             byte[] buffer = new byte[65536]
             int n
             while ((n = input.read(buffer)) > 0) digest.update(buffer, 0, n)
@@ -77,3 +77,37 @@ tasks.register('verifyPayload') {
     }
 }
 tasks.named('preBuild').configure { dependsOn 'verifyPayload' }
+
+// Check the built container too: Android packaging treats .gz assets specially,
+// so source-asset hashes alone cannot prove the bytes actually shipped in the APK.
+tasks.register('verifyPackagedPayload') {
+    dependsOn 'packageDebug'
+    doLast {
+        def metadata = file('src/main/assets/payload.json')
+        def manifest = new groovy.json.JsonSlurper().parse(metadata)
+        def apk = layout.buildDirectory.file('outputs/apk/debug/app-debug.apk').get().asFile
+        new java.util.zip.ZipFile(apk).withCloseable { archive ->
+            def entry = archive.getEntry('assets/pocket.tgz')
+            if (entry == null || entry.method != java.util.zip.ZipEntry.STORED ||
+                archive.getEntry('assets/pocket.tar') != null || archive.getEntry('assets/runtime.zip') != null) {
+                throw new GradleException('APK did not preserve the uncompressed portable asset container')
+            }
+            def digest = java.security.MessageDigest.getInstance('SHA-256')
+            archive.getInputStream(entry).withCloseable { input ->
+                byte[] buffer = new byte[65536]
+                int n
+                while ((n = input.read(buffer)) > 0) digest.update(buffer, 0, n)
+            }
+            if (digest.digest().encodeHex().toString() != manifest.sha256) {
+                throw new GradleException('APK changed the portable payload bytes')
+            }
+            def manifestEntry = archive.getEntry('assets/payload.json')
+            if (manifestEntry == null || !java.util.Arrays.equals(archive.getInputStream(manifestEntry).withCloseable { it.bytes }, metadata.bytes)) {
+                throw new GradleException('APK embeds different payload metadata')
+            }
+        }
+    }
+}
+tasks.configureEach {
+    if (name == 'assembleDebug') dependsOn 'verifyPackagedPayload'
+}

@@ -102,7 +102,7 @@ class ReleaseSafety(unittest.TestCase):
         self.write_json('upstream.lock.json', self.lock)
         self.write_json('termux-requirements.json', {'schemaVersion': 1, 'runtime': 'termux', 'packageName': 'com.termux'})
         runtime = b'the exact prepared Android runtime archive'
-        self.payload = {'schemaVersion': 2, 'runtime': 'termux', 'archive': 'pocket.tar.gz', 'minimumNode': '22.19.0',
+        self.payload = {'schemaVersion': 2, 'runtime': 'termux', 'archive': 'pocket.tgz', 'minimumNode': '22.19.0',
                         'piPocketCommit': self.lock['commit'], 'piPocketVersion': self.lock['version'],
                         'sha256': sha(runtime), 'hostScripts': {name: sha(b'fixture script') for name in publisher.HOST_SCRIPTS}}
         self.payload['runtimeVersion'] = publisher.runtime_version(self.lock['commit'], self.payload['sha256'], self.payload['hostScripts'])
@@ -110,7 +110,7 @@ class ReleaseSafety(unittest.TestCase):
         self.apk_name = 'pi-pocket-android-0.3.0-ci.3-universal-debug.apk'
         with zipfile.ZipFile(self.dist / self.apk_name, 'w') as archive:
             archive.writestr('assets/payload.json', (self.dist / 'payload.json').read_bytes())
-            archive.writestr('assets/pocket.tar.gz', runtime)
+            archive.writestr('assets/pocket.tgz', runtime)
             for name in publisher.HOST_SCRIPTS:
                 archive.writestr('assets/' + name, b'fixture script')
         self.build = {'schemaVersion': 1, 'runtime': 'termux', 'baseSha': 'a' * 40, 'repository': publisher.REPOSITORY,
@@ -170,7 +170,7 @@ class ReleaseSafety(unittest.TestCase):
     def test_reject_changed_apk_even_if_build_and_outer_checksums_are_updated(self):
         with zipfile.ZipFile(self.dist / self.apk_name, 'w') as archive:
             archive.writestr('assets/payload.json', (self.dist / 'payload.json').read_bytes())
-            archive.writestr('assets/pocket.tar.gz', b'wrong payload')
+            archive.writestr('assets/pocket.tgz', b'wrong payload')
             for name in publisher.HOST_SCRIPTS:
                 archive.writestr('assets/' + name, b'fixture script')
         self.build['apk']['sha256'] = publisher.digest(self.dist / self.apk_name)
@@ -203,7 +203,7 @@ class ReleaseSafety(unittest.TestCase):
         self.write_json('payload.json', self.payload)
         with zipfile.ZipFile(self.dist / self.apk_name, 'w') as archive:
             archive.writestr('assets/payload.json', (self.dist / 'payload.json').read_bytes())
-            archive.writestr('assets/pocket.tar.gz', b'the exact prepared Android runtime archive')
+            archive.writestr('assets/pocket.tgz', b'the exact prepared Android runtime archive')
             for name in publisher.HOST_SCRIPTS:
                 archive.writestr('assets/' + name, b'fixture script')
         self.build['apk']['sha256'] = publisher.digest(self.dist / self.apk_name)
@@ -217,7 +217,7 @@ class ReleaseSafety(unittest.TestCase):
         self.write_json('payload.json', self.payload)
         with zipfile.ZipFile(self.dist / self.apk_name, 'w') as archive:
             archive.writestr('assets/payload.json', (self.dist / 'payload.json').read_bytes())
-            archive.writestr('assets/pocket.tar.gz', b'the exact prepared Android runtime archive')
+            archive.writestr('assets/pocket.tgz', b'the exact prepared Android runtime archive')
             for name in publisher.HOST_SCRIPTS:
                 archive.writestr('assets/' + name, b'fixture script')
         self.build['apk']['sha256'] = publisher.digest(self.dist / self.apk_name)

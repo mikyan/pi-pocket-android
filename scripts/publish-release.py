@@ -108,7 +108,7 @@ def validate_dist(dist, environment):
             and requirements.get('packageName') == 'com.termux', 'Expected installed-Termux requirements')
     payload = read_json(dist / 'payload.json')
     require(payload.get('schemaVersion') == 2 and payload.get('runtime') == 'termux'
-            and payload.get('archive') == 'pocket.tar.gz' and 'architecture' not in payload,
+            and payload.get('archive') == 'pocket.tgz' and 'architecture' not in payload,
             'Expected universal installed-Termux payload')
     require(payload.get('piPocketCommit') == build['upstreamCommit']
             and payload.get('piPocketVersion') == build['upstreamVersion'], 'APK payload upstream mismatch')
@@ -116,12 +116,12 @@ def validate_dist(dist, environment):
             and payload.get('minimumNode') == lock['minimumNode'], 'Minimum Node.js requirement mismatch')
     require(isinstance(payload.get('sha256'), str) and SHA256.fullmatch(payload['sha256']), 'Invalid payload digest')
     with zipfile.ZipFile(dist / expected_name) as archive:
-        for name in ('assets/payload.json', 'assets/pocket.tar.gz', *('assets/' + name for name in HOST_SCRIPTS)):
+        for name in ('assets/payload.json', 'assets/pocket.tgz', *('assets/' + name for name in HOST_SCRIPTS)):
             require(archive.namelist().count(name) == 1, f'APK must contain exactly one {name}')
         require('assets/runtime.zip' not in archive.namelist()
                 and not any(name.startswith('lib/') for name in archive.namelist()), 'APK must not embed a native runtime')
         require(archive.read('assets/payload.json') == (dist / 'payload.json').read_bytes(), 'APK embeds another manifest')
-        with archive.open('assets/pocket.tar.gz') as handle:
+        with archive.open('assets/pocket.tgz') as handle:
             require(hashlib.file_digest(handle, 'sha256').hexdigest() == payload['sha256'], 'APK embeds another payload')
         scripts = payload.get('hostScripts', {})
         require(isinstance(scripts, dict) and set(scripts) == set(HOST_SCRIPTS), 'Missing host script integrity metadata')

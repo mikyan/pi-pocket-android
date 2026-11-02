@@ -3,7 +3,7 @@
 build/
 app/build/
 app/src/main/assets/runtime.zip
-app/src/main/assets/pocket.tar.gz
+app/src/main/assets/pocket.tgz
 app/src/main/assets/setup-runtime.sh
 app/src/main/assets/launch-pocket.sh
 app/src/main/assets/payload.json

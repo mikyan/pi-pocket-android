@@ -391,7 +391,7 @@ class DeviceSmoke:
             self.runtime_version = payload.get('runtimeVersion')
             if not isinstance(self.runtime_version, str) or not self.runtime_version:
                 raise RuntimeError('APK payload version is missing')
-            if 'assets/pocket.tar.gz' not in archive.namelist():
+            if 'assets/pocket.tgz' not in archive.namelist():
                 raise RuntimeError('Universal APK lacks the original upstream payload')
             if any(name.startswith('lib/') or name == 'assets/runtime.zip' for name in archive.namelist()):
                 raise RuntimeError('Universal APK unexpectedly contains an embedded native runtime')

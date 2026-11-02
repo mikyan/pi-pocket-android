@@ -14,7 +14,7 @@ def verify(root=ROOT):
     payload = json.loads((assets / 'payload.json').read_text(encoding='utf-8'))
     lock = json.loads((root / 'upstream.lock.json').read_text(encoding='utf-8'))
     assert payload['schemaVersion'] == 2 and payload['runtime'] == 'termux'
-    assert payload['archive'] == 'pocket.tar.gz' and 'architecture' not in payload
+    assert payload['archive'] == 'pocket.tgz' and 'architecture' not in payload
     assert payload['piPocketCommit'] == lock['commit'] and payload['piPocketVersion'] == lock['version']
     assert payload['minimumNode'] == lock['minimumNode']
     archive_path = assets / payload['archive']

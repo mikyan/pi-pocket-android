@@ -63,7 +63,7 @@ class PortablePackaging(unittest.TestCase):
         self.assertEqual(payload['runtime'], 'termux')
         self.assertEqual(payload['minimumNode'], self.lock['minimumNode'])
         self.assertNotIn('architecture', payload)
-        with tarfile.open(self.assets / 'pocket.tar.gz') as archive:
+        with tarfile.open(self.assets / 'pocket.tgz') as archive:
             self.assertEqual(archive.extractfile('src/server.ts').read(), b'// exact upstream bytes\r\n')
             entry = archive.getmember('node_modules/.bin/example')
             self.assertTrue(entry.issym())
@@ -103,7 +103,7 @@ class PortablePackaging(unittest.TestCase):
 
     def test_modified_tar_fails_integrity_check(self):
         self.build()
-        with (self.assets / 'pocket.tar.gz').open('ab') as output:
+        with (self.assets / 'pocket.tgz').open('ab') as output:
             output.write(b'unexpected')
         with self.assertRaises(AssertionError):
             verify.verify(self.root)
@@ -152,8 +152,10 @@ class PortablePackaging(unittest.TestCase):
 
     def test_old_embedded_payload_is_removed(self):
         self.write(self.assets / 'runtime.zip', b'obsolete')
+        self.write(self.assets / 'pocket.tar.gz', b'obsolete gzip filename')
         self.build()
         self.assertFalse((self.assets / 'runtime.zip').exists())
+        self.assertFalse((self.assets / 'pocket.tar.gz').exists())
 
 
 if __name__ == '__main__':

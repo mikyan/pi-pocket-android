@@ -50,7 +50,7 @@ python scripts/verify-payload.py
 
 也可给 prepare 传 `--source D:/Code/pi-pocket`，从本地 Git 仓库提取锁定提交；不会修改该仓库或打包未提交改动。省略时拉取上游。产物为 `app/build/outputs/apk/debug/app-debug.apk`。
 
-`upstream.lock.json` 固定上游提交、版本及最低 Node 要求。prepare 在干净目录执行 `npm ci --omit=dev --omit=optional --ignore-scripts`，生成 `assets/pocket.tar.gz` 和 `payload.json`。源码保持逐字节一致，npm 命令链接按包元数据重建为 POSIX 符号链接。构建和 Termux 导入均验证归档 SHA-256。Termux 系统包由手机上的包管理器维护，`termux-requirements.json` 记录集成要求，不声称锁定用户的整个 Termux 环境。
+`upstream.lock.json` 固定上游提交、版本及最低 Node 要求。prepare 在干净目录执行 `npm ci --omit=dev --omit=optional --ignore-scripts`，生成 `assets/pocket.tgz` 和 `payload.json`。源码保持逐字节一致，npm 命令链接按包元数据重建为 POSIX 符号链接。构建和 Termux 导入均验证归档 SHA-256。Termux 系统包由手机上的包管理器维护，`termux-requirements.json` 记录集成要求，不声称锁定用户的整个 Termux 环境。
 
 Pi TUI 包中随附的六个桌面原生 helper 不适用于 Android，构建时仅排除这些已明确识别的文件，并在 payload 元数据记录路径和哈希；JavaScript 源码及 QuickJS WebAssembly 保留。运行版本标识同时绑定上游归档与宿主脚本，单独修复启动脚本也会触发正确的版本切换。
 

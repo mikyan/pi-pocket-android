@@ -223,8 +223,10 @@ def build_payload(upstream: Path, lock: dict):
     validate_lock(lock)
     files, modes, links = portable_entries(upstream)
     ASSETS.mkdir(parents=True, exist_ok=True)
-    output = ASSETS / 'pocket.tar.gz'
-    temporary = output.with_suffix('.gz.part')
+    # AAPT treats *.gz as a pre-compressed input and strips that suffix. *.tgz
+    # retains the exact gzip bytes and filename inside the APK.
+    output = ASSETS / 'pocket.tgz'
+    temporary = output.with_name(output.name + '.part')
     with temporary.open('wb') as raw, gzip.GzipFile(filename='', mode='wb', fileobj=raw, mtime=0) as compressed:
         with tarfile.open(fileobj=compressed, mode='w', format=tarfile.PAX_FORMAT) as archive:
             for name in sorted(set(files) | set(links)):
@@ -259,7 +261,7 @@ def write_payload_metadata(upstream: Path, lock: dict, output: Path):
                 'hostScripts': script_hashes,
                 'excludedDependencyFiles': excluded_dependency_files(upstream)}
     (ASSETS / 'payload.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8', newline='\n')
-    for obsolete in ('runtime.zip', 'permissions.json', 'SYMLINKS.txt'):
+    for obsolete in ('runtime.zip', 'pocket.tar.gz', 'permissions.json', 'SYMLINKS.txt'):
         (ASSETS / obsolete).unlink(missing_ok=True)
     return manifest
 

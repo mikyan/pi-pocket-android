@@ -29,7 +29,7 @@ API 来自 [Termux RUN_COMMAND](https://github.com/termux/termux-app/wiki/RUN_CO
 
 prepare 从锁定 Git 提交提取原样源码，用原始 `package-lock.json` 安装生产 JavaScript 依赖。`--omit=dev --omit=optional --ignore-scripts` 避免构建机平台的可选原生二进制和安装脚本进入设备。POSIX 命令链接按包元数据重建，许可证文本保留。
 
-APK 含 `pocket.tar.gz`、`payload.json` 和宿主安装/启动脚本。payload schema 2 指明 `runtime=termux`、上游版本、提交、最低 Node、归档 SHA-256 和运行版本标识。构建审计检查路径和链接边界、核心源码一致性、哈希；Termux 导入再次核对哈希。
+APK 含 `pocket.tgz`、`payload.json` 和宿主安装/启动脚本。payload schema 2 指明 `runtime=termux`、上游版本、提交、最低 Node、归档 SHA-256 和运行版本标识。构建审计检查路径和链接边界、核心源码一致性、哈希；Termux 导入再次核对哈希。
 
 首次传输使用只绑定回环地址的短期 HTTP 服务，随机端口与高熵路径令牌只通过授权命令传给 Termux。该服务仅提供本次固定资产，不允许任意文件读取；完成或超时即关闭。它不向局域网公开安装包和凭据。
 
