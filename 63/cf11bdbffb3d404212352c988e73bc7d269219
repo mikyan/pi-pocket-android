@@ -1,0 +1,38 @@
+tests/test_publish_release.py
+  s_9596269565dfac::t_fb3efe8310b787 1-282
+tests/test_upstream_update.py
+  s_9596269565dfac::t_e2906bb00eb68f 69-71,139-149,215-228
+  s_9596269565dfac::t_a8445ef51a535e 1-68,72-138,150-214,229-232
+README.md
+  s_9596269565dfac::t_e610a9b021154d 45,47,49,51-52,54-60,72-73,92,96
+.github/workflows/build-android.yml
+  s_9596269565dfac::t_d7ca8cca3a6b2f 8-9,11-19,26,29-70,72-73,86,94-119,192-193,196-197,208,216-241,333,337,340,358-387,389
+  s_9596269565dfac::t_e610a9b021154d 388
+scripts/publish-release.py
+  s_9596269565dfac::t_fb3efe8310b787 92-93
+  s_9596269565dfac::t_0a7c41db8ec2a7 1-91,94-326
+scripts/check-upstream.py
+  s_9596269565dfac::t_a8445ef51a535e 1-250
+scripts/collect-release.py
+  s_9596269565dfac::t_d18a0e0da4c998 1-65
+scripts/plan-build.py
+  s_9596269565dfac::t_d18a0e0da4c998 1-112
+tests/test_release_plan.py
+  s_9596269565dfac::t_d18a0e0da4c998 1-81
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "development:1.7.3",
+  "base_commit_sha": "63cf11bdbffb3d404212352c988e73bc7d269219",
+  "prompts": {},
+  "sessions": {
+    "s_9596269565dfac": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a19c67-b563-7e60-a982-d95a172ea6cf",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "AI_BA <ai_ball@outlook.com>"
+    }
+  }
+}
