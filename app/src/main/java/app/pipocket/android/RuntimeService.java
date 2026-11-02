@@ -144,7 +144,9 @@ public final class RuntimeService extends Service {
             .putExtra("com.termux.RUN_COMMAND_PENDING_INTENT", pending)
             .putExtra("com.termux.RUN_COMMAND_COMMAND_LABEL", "Pi Pocket " + phase)
             .putExtra("com.termux.RUN_COMMAND_COMMAND_DESCRIPTION", "在 Termux 中连接或启动 Pi Pocket；安装缺少的命令依赖。");
-        if (startService(request) == null) throw new IllegalStateException("Termux 拒绝命令。请打开 Termux 并启用 allow-external-apps=true。");
+        // Termux's RunCommandService immediately enters the foreground in onCreate/onStartCommand.
+        // A cold Termux process cannot be started as a background service on Android 8+.
+        if (startForegroundService(request) == null) throw new IllegalStateException("Termux 拒绝命令。请打开 Termux 并启用 allow-external-apps=true。");
     }
 
     private void connected(String wantedVersion) {
