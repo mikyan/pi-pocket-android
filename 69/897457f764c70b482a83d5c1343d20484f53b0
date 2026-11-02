@@ -1,0 +1,21 @@
+scripts/device-smoke.py
+  s_9596269565dfac::t_4f11510e0b42ea 178
+app/src/main/java/app/pipocket/android/MainActivity.java
+  s_9596269565dfac::t_4f11510e0b42ea 75,129,135
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "development:1.7.3",
+  "base_commit_sha": "69897457f764c70b482a83d5c1343d20484f53b0",
+  "prompts": {},
+  "sessions": {
+    "s_9596269565dfac": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a19c67-b563-7e60-a982-d95a172ea6cf",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "AI_BA <ai_ball@outlook.com>"
+    }
+  }
+}
