@@ -128,6 +128,9 @@ public final class RuntimeService extends Service {
     }
 
     private void dispatch(String nonce, String phase, String script) {
+        if (script.getBytes(StandardCharsets.UTF_8).length >= 96 * 1024) {
+            throw new IllegalStateException("Termux 启动脚本超过安全参数长度限制，请更新安装包。");
+        }
         Intent callback = new Intent(this, TermuxResultReceiver.class).setData(Uri.parse("pipocket://" + phase + "/" + nonce));
         int pendingFlags = PendingIntent.FLAG_ONE_SHOT;
         if (Build.VERSION.SDK_INT >= 31) pendingFlags |= PendingIntent.FLAG_MUTABLE;
@@ -135,8 +138,7 @@ public final class RuntimeService extends Service {
         Intent request = new Intent("com.termux.RUN_COMMAND")
             .setComponent(new ComponentName("com.termux", "com.termux.app.RunCommandService"))
             .putExtra("com.termux.RUN_COMMAND_PATH", "/data/data/com.termux/files/usr/bin/bash")
-            .putExtra("com.termux.RUN_COMMAND_ARGUMENTS", new String[] {"-s"})
-            .putExtra("com.termux.RUN_COMMAND_STDIN", script)
+            .putExtra("com.termux.RUN_COMMAND_ARGUMENTS", new String[] {"--noprofile", "--norc", "-c", script})
             .putExtra("com.termux.RUN_COMMAND_WORKDIR", "/data/data/com.termux/files/home")
             .putExtra("com.termux.RUN_COMMAND_BACKGROUND", true)
             .putExtra("com.termux.RUN_COMMAND_PENDING_INTENT", pending)

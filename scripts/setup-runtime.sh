@@ -1,8 +1,9 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# Invoked over the official RUN_COMMAND stdin API. Never modifies upstream source.
+# Passed as one bash -c argument over RUN_COMMAND; child commands cannot consume source.
 set -Eeuo pipefail
 umask 077
 unset NODE_OPTIONS NODE_PATH
+export DEBIAN_FRONTEND=noninteractive
 : "${HOME:?Termux HOME is required}" "${PREFIX:?Termux PREFIX is required}"
 [[ "$HOME" == /* && "$HOME" != / ]] || exit 64
 [[ "$POCKET_RUNTIME_VERSION" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]] || exit 64
@@ -127,7 +128,7 @@ if ! command -v flock >/dev/null 2>&1; then
         sleep 1
     done
     [[ "$BOOTSTRAP_OWNED" == 1 ]] || die 'Another Termux dependency installer is busy; retry later.'
-    pkg install -y util-linux
+    pkg install -y -o Dpkg::Options::=--force-confold util-linux </dev/null
 fi
 exec 9> "$BASE/setup.lock"
 flock --exclusive --wait 120 9
@@ -181,7 +182,7 @@ if command -v node >/dev/null 2>&1; then
                 || "$node_linker_error" == *"cannot locate symbol"* \
                 || "$node_linker_error" =~ library[[:space:]].*not[[:space:]]found ]]; then
             STAGE='Repairing only Node.js direct supporting libraries after an Android linker error'
-            pkg install -y "${node_support_packages[@]}"
+            pkg install -y -o Dpkg::Options::=--force-confold "${node_support_packages[@]}" </dev/null
             node --version || die 'Node.js still cannot start after repairing its supporting libraries. Check the Termux package installation; Pi Pocket did not replace Node.js.'
             STAGE='Checking Node.js compatibility'
         else
@@ -202,7 +203,7 @@ for pair in 'git:git' 'rg:ripgrep' 'fd:fd' 'curl:curl' 'tar:tar' 'sha256sum:core
     if ! command -v "$command_name" >/dev/null 2>&1 && [[ " ${missing[*]} " != *" $package "* ]]; then missing+=("$package"); fi
 done
 STAGE='Installing only missing Termux dependencies'
-if [[ "${#missing[@]}" -gt 0 ]]; then pkg install -y "${missing[@]}"; fi
+if [[ "${#missing[@]}" -gt 0 ]]; then pkg install -y -o Dpkg::Options::=--force-confold "${missing[@]}" </dev/null; fi
 STAGE='Validating Node.js and command tools'
 node - "$POCKET_MINIMUM_NODE" <<'JS'
 const actual = process.versions.node.split('.').map(Number), minimum = process.argv[2].split('.').map(Number);
