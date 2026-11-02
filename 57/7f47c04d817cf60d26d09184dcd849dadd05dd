@@ -1,0 +1,24 @@
+docs/architecture.md
+  s_9596269565dfac::t_266d2e67ad5138 43,65-66
+scripts/device-smoke.py
+  s_9596269565dfac::t_8987a8c0ea6825 158-165,169,171,173
+  s_9596269565dfac::t_a76afb39db0f88 19,40,115-157,166-168,170,172,174-189,228-230,285,312-314,318
+scripts/setup-runtime.sh
+  s_9596269565dfac::t_266d2e67ad5138 3-5,12-16,18
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "development:1.7.3",
+  "base_commit_sha": "577f47c04d817cf60d26d09184dcd849dadd05dd",
+  "prompts": {},
+  "sessions": {
+    "s_9596269565dfac": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a19c67-b563-7e60-a982-d95a172ea6cf",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "AI_BA <ai_ball@outlook.com>"
+    }
+  }
+}
