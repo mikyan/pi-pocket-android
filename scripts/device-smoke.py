@@ -16,6 +16,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import xml.etree.ElementTree as ET
 
 APP = 'io.github.mikyan.pipocket'
 TERMUX = 'com.termux'
@@ -36,6 +37,7 @@ class DeviceSmoke:
         self.tokens: set[str] = set()
         self.pids: set[str] = set()
         self.records: list[str] = []
+        self.last_ui_xml: bytes | None = None
         self.started = time.monotonic()
         self.adb = os.environ.get('ADB', 'adb')
         self.serial = os.environ.get('ANDROID_SERIAL', '')
@@ -110,6 +112,81 @@ class DeviceSmoke:
             time.sleep(2)
         raise RuntimeError(f'Local authenticated service did not become ready within {seconds}s')
 
+    @staticmethod
+    def rendered_webview(xml: bytes) -> dict[str, int] | None:
+        """Require actual upstream controls inside a visible WebView, not the host splash/title.
+
+        The stable labels come from pinned upstream web/sessions.js and web/home.js.
+        An empty WebView, a browser error page and the native startup layout all fail.
+        """
+        tree = ET.fromstring(xml)
+        stable_labels = ('search sessions', 'open the launcher', 'new session',
+                         'no sessions yet. start one with new.')
+
+        def visible(node):
+            if node.get('visible-to-user') == 'false' or node.get('enabled') == 'false':
+                return False
+            bounds = re.fullmatch(r'\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]', node.get('bounds', ''))
+            if not bounds:
+                return False
+            left, top, right, bottom = map(int, bounds.groups())
+            return right > left and bottom > top
+
+        for webview in tree.iter('node'):
+            if webview.get('class') != 'android.webkit.WebView' or not visible(webview):
+                continue
+            if webview.get('package', APP) != APP:
+                continue
+            labels = set()
+            actionable = 0
+            for child in webview.iter('node'):
+                if child is webview or not visible(child):
+                    continue
+                label = ' '.join((child.get('text', '') + ' ' + child.get('content-desc', '')).split()).lower()
+                if label and label != 'pi pocket':
+                    labels.add(label)
+                if any(child.get(attribute) == 'true' for attribute in ('clickable', 'focusable', 'long-clickable')):
+                    actionable += 1
+            stable = sum(any(label.startswith(expected) for label in labels) for expected in stable_labels)
+            if len(labels) >= 2 and actionable >= 1 and stable >= 1:
+                return {'visible_labels': len(labels), 'actionable_nodes': actionable, 'upstream_markers': stable}
+        return None
+
+    def wait_webview_rendered(self, stage: str, seconds=60):
+        deadline = time.monotonic() + seconds
+        ui_path = '/data/local/tmp/pocket-ui.xml'
+        self.last_ui_xml = None
+
+        def budget(limit):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError('WebView rendering deadline reached')
+            return min(limit, remaining)
+
+        while time.monotonic() < deadline:
+            try:
+                # Remove the previous dump so a failed refresh cannot reuse a pre-restart UI.
+                self.command('shell', 'rm', '-f', ui_path, check=False, timeout=budget(5))
+                dumped = self.command('shell', 'uiautomator', 'dump', '--compressed', ui_path,
+                                      check=False, timeout=budget(15))
+                if dumped.returncode == 0:
+                    snapshot = self.command('exec-out', 'cat', ui_path, check=False, timeout=budget(5))
+                    if snapshot.returncode == 0:
+                        self.last_ui_xml = snapshot.stdout
+                        details = self.rendered_webview(snapshot.stdout)
+                        if details:
+                            # .xml.txt stays within the existing scoped text-artifact upload.
+                            (self.report.parent / f'ui-{stage}.xml.txt').write_text(
+                                self.redact(snapshot.stdout.decode('utf-8', errors='replace')), encoding='utf-8')
+                            self.record(f'PASS: {stage} WebView rendered upstream controls '
+                                        f'({details["visible_labels"]} visible labels, '
+                                        f'{details["actionable_nodes"]} actionable nodes)')
+                            return
+            except (OSError, ET.ParseError, subprocess.TimeoutExpired):
+                pass
+            time.sleep(min(2, max(0, deadline - time.monotonic())))
+        raise RuntimeError(f'{stage} WebView did not render visible upstream controls within {seconds}s')
+
     def packages(self):
         output = self.command('shell', 'pm', 'list', 'packages').stdout.decode()
         installed = set(output.splitlines())
@@ -148,6 +225,9 @@ class DeviceSmoke:
             self.token()
         except Exception:
             pass
+        if self.last_ui_xml is not None:
+            (self.report.parent / 'ui-failure.xml.txt').write_text(
+                self.redact(self.last_ui_xml.decode('utf-8', errors='replace')), encoding='utf-8')
         try:
             result = self.command('exec-out', 'run-as', APP, '/system/bin/tail', '-n', '300',
                                   'files/home/pocket.log', check=False, timeout=10)
@@ -202,6 +282,7 @@ class DeviceSmoke:
             raise RuntimeError('The original frontend did not return HTML')
         self.verify_termux_untouched()
         self.record('PASS: authenticated /api/me and original frontend HTML are available')
+        self.wait_webview_rendered('initial')
         self.command('shell', 'am', 'force-stop', APP)
         stopped = False
         for _ in range(15):
@@ -228,10 +309,13 @@ class DeviceSmoke:
         self.packages()
         self.verify_termux_untouched()
         self.record('PASS: same owner and local service recovered; official Termux data stayed intact')
+        self.wait_webview_rendered('reopened')
+        # Accessibility confirms the DOM is visible; allow the compositor one final frame.
+        time.sleep(1)
         screenshot = self.command('exec-out', 'screencap', '-p', check=False).stdout
         if screenshot.startswith(b'\x89PNG\r\n\x1a\n'):
             (self.report.parent / 'frontend.png').write_bytes(screenshot)
-        self.record('RESULT: PASS (emulator startup/restart/coexistence; ARM64 hardware and active-task recovery remain separate tests)')
+        self.record('RESULT: PASS (emulator startup/render/restart/coexistence; ARM64 hardware and active-task recovery remain separate tests)')
 
 
 def main():
