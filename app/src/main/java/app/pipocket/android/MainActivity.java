@@ -72,6 +72,7 @@ public final class MainActivity extends Activity {
         caption.setTextSize(15);
         toolbar.addView(caption, new LinearLayout.LayoutParams(0, -2, 1));
         Button settings = new Button(this);
+        settings.setAllCaps(false);
         settings.setText("Termux");
         settings.setTextSize(12);
         settings.setOnClickListener(view -> showRuntimeMenu());
@@ -125,11 +126,13 @@ public final class MainActivity extends Activity {
         message.setPadding(0, 28, 0, 20);
         startup.addView(message, new LinearLayout.LayoutParams(-1, -2));
         retry = new Button(this);
+        retry.setAllCaps(false);
         retry.setText("重试");
         retry.setVisibility(View.GONE);
         retry.setOnClickListener(view -> connectFromUser());
         startup.addView(retry, new LinearLayout.LayoutParams(-2, -2));
         Button help = new Button(this);
+        help.setAllCaps(false);
         help.setText("Termux 配置帮助");
         help.setOnClickListener(view -> showHelp());
         startup.addView(help, new LinearLayout.LayoutParams(-2, -2));

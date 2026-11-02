@@ -175,7 +175,7 @@ class DeviceSmoke:
                 xml = self.read_ui(timeout=min(15, max(1, deadline - time.monotonic())))
                 if xml:
                     for node in ET.fromstring(xml).iter('node'):
-                        if node.get('package') != APP or node.get('text') != text:
+                        if node.get('package') != APP or node.get('text', '').casefold() != text.casefold():
                             continue
                         if node.get('clickable') != 'true' or node.get('enabled') == 'false':
                             continue
