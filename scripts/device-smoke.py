@@ -1,4 +1,4 @@
-"""Exercise coexistence, local startup and force-stop recovery on a disposable emulator.
+"""Exercise installed-Termux deployment and process recovery on a disposable emulator.
 
 No model prompts are sent. Owner credentials are kept in memory and redacted from
 the small, app-scoped diagnostic artifacts. Never point this test at a personal phone.
@@ -17,10 +17,14 @@ import time
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
+import zipfile
 
 APP = 'io.github.mikyan.pipocket'
 TERMUX = 'com.termux'
 ACTIVITY = APP + '/app.pipocket.android.MainActivity'
+TERMUX_ACTIVITY = TERMUX + '/com.termux.app.TermuxActivity'
+RUN_PERMISSION = 'com.termux.permission.RUN_COMMAND'
+TERMUX_ROOT = 'files/home/.local/share/pi-pocket-android'
 PORT = 18787
 TERMUX_FILENAME = 'termux-app_v0.118.3+github-debug_x86_64.apk'
 TERMUX_RELEASE = 'https://github.com/termux/termux-app/releases/download/v0.118.3/'
@@ -41,6 +45,8 @@ class DeviceSmoke:
         self.started = time.monotonic()
         self.adb = os.environ.get('ADB', 'adb')
         self.serial = os.environ.get('ANDROID_SERIAL', '')
+        self.emulator_verified = False
+        self.runtime_version: str | None = None
         # Do not let a shell/runner HTTP proxy receive local owner credentials.
         self.http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -48,8 +54,10 @@ class DeviceSmoke:
         for token in sorted(self.tokens, key=len, reverse=True):
             text = text.replace(token, '[REDACTED]')
         text = re.sub(r'(?i)([?&](?:token|key|code)=)[^&\s]+', r'\1[REDACTED]', text)
+        text = re.sub(r'(https?://(?:127\.0\.0\.1|localhost):\d+)/[^\s"\x27<>]*',
+                      r'\1/[REDACTED]', text)
         text = re.sub(r'(?i)(authorization\s*[:=]\s*(?:bearer\s+)?)[^\s]+', r'\1[REDACTED]', text)
-        return re.sub(r'(?i)(["\x27]?(?:ownerToken|access_token|refresh_token)["\x27]?\s*[:=]\s*["\x27]?)[^"\x27\s,}]+',
+        return re.sub(r'(?i)(["\x27]?(?:ownerToken|token|access_token|refresh_token)["\x27]?\s*[:=]\s*["\x27]?)[^"\x27\s,}]+',
                       r'\1[REDACTED]', text)
 
     def record(self, text: str):
@@ -75,7 +83,7 @@ class DeviceSmoke:
         return result.stdout if result.returncode == 0 else None
 
     def token(self) -> str | None:
-        data = self.read_private('files/home/.pi-pocket/config.json')
+        data = self.read_private(TERMUX_ROOT + '/data/config.json', TERMUX)
         if data is None:
             return None
         try:
@@ -86,6 +94,126 @@ class DeviceSmoke:
         except (ValueError, UnicodeDecodeError):
             pass
         return None
+
+    def select_emulator(self):
+        if not self.serial:
+            result = self.command('devices')
+            emulators = [line.split()[0] for line in result.stdout.decode().splitlines()
+                         if re.fullmatch(r'emulator-\d+\s+device', line.strip())]
+            if len(emulators) != 1:
+                raise RuntimeError('Set ANDROID_SERIAL to one disposable emulator; no unique emulator was found')
+            self.serial = emulators[0]
+        self.command('wait-for-device', timeout=60)
+        hardware = self.command('shell', 'getprop', 'ro.kernel.qemu').stdout.decode().strip()
+        if hardware != '1':
+            raise RuntimeError('This test only runs on a disposable Android emulator')
+        self.emulator_verified = True
+
+    def start_termux(self):
+        self.command('shell', 'am', 'start', '-W', '-n', TERMUX_ACTIVITY, timeout=30)
+
+    def initialize_termux(self):
+        self.start_termux()
+        deadline = time.monotonic() + 180
+        while time.monotonic() < deadline:
+            ready = self.command('shell', 'run-as', TERMUX, '/system/bin/sh', '-c',
+                                 "'test -x files/usr/bin/bash && test -x files/usr/bin/apt && test -d files/home'",
+                                 check=False, timeout=10)
+            if ready.returncode == 0:
+                self.record('PASS: official Termux initialized its own bootstrap and HOME')
+                return
+            time.sleep(2)
+        raise RuntimeError('Official Termux did not finish first-launch initialization within 180s')
+
+    def set_external_commands(self, allowed: bool):
+        # This test only writes a disposable emulator's freshly installed Termux.
+        self.command('shell', 'run-as', TERMUX, 'mkdir', '-p', 'files/home/.termux')
+        self.command('shell', 'run-as', TERMUX, '/system/bin/tee',
+                     'files/home/.termux/termux.properties',
+                     input_data=f'allow-external-apps={str(allowed).lower()}\n'.encode())
+        self.command('shell', 'am', 'force-stop', TERMUX)
+        self.start_termux()
+
+    def read_ui(self, timeout=20) -> bytes | None:
+        ui_path = '/data/local/tmp/pocket-ui.xml'
+        self.command('shell', 'rm', '-f', ui_path, check=False, timeout=5)
+        result = self.command('shell', 'uiautomator', 'dump', '--compressed', ui_path,
+                              check=False, timeout=timeout)
+        if result.returncode != 0:
+            return None
+        result = self.command('exec-out', 'cat', ui_path, check=False, timeout=5)
+        if result.returncode == 0:
+            self.last_ui_xml = result.stdout
+            return result.stdout
+        return None
+
+    def wait_startup_blocked(self, stage: str, markers: tuple[str, ...], seconds=45):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            if self.token() is not None:
+                raise RuntimeError(f'{stage} created owner data despite a blocked Termux command')
+            try:
+                xml = self.read_ui(timeout=min(15, max(1, deadline - time.monotonic())))
+                if xml:
+                    tree = ET.fromstring(xml)
+                    labels = ' '.join(node.get('text', '') + ' ' + node.get('content-desc', '')
+                                      for node in tree.iter('node')).lower()
+                    if any(marker.lower() in labels for marker in markers):
+                        (self.report.parent / f'ui-{stage}.xml.txt').write_text(
+                            self.redact(xml.decode('utf-8', errors='replace')), encoding='utf-8')
+                        self.record(f'PASS: {stage} showed an actionable Termux prerequisite error without starting pi-pocket')
+                        return
+            except (OSError, ET.ParseError, subprocess.TimeoutExpired):
+                pass
+            time.sleep(2)
+        raise RuntimeError(f'{stage} did not show the expected prerequisite error within {seconds}s')
+
+    def tap_button(self, text: str, seconds=30):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            try:
+                xml = self.read_ui(timeout=min(15, max(1, deadline - time.monotonic())))
+                if xml:
+                    for node in ET.fromstring(xml).iter('node'):
+                        if node.get('package') != APP or node.get('text') != text:
+                            continue
+                        if node.get('clickable') != 'true' or node.get('enabled') == 'false':
+                            continue
+                        bounds = re.fullmatch(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', node.get('bounds', ''))
+                        if bounds:
+                            left, top, right, bottom = map(int, bounds.groups())
+                            if right > left and bottom > top:
+                                self.command('shell', 'input', 'tap', str((left + right) // 2), str((top + bottom) // 2))
+                                return
+            except (OSError, ET.ParseError, subprocess.TimeoutExpired):
+                pass
+            time.sleep(1)
+        raise RuntimeError('The expected host setup button was not available')
+
+    def verify_termux_server(self):
+        marker = self.read_private(TERMUX_ROOT + '/data/running-version', TERMUX)
+        if not marker or marker.decode().strip() != self.runtime_version:
+            raise RuntimeError('Termux server is not running this APK payload version')
+        pid_file = self.read_private(TERMUX_ROOT + '/data/server.pid', TERMUX)
+        pid = pid_file.decode().strip() if pid_file else ''
+        if not pid.isdigit():
+            raise RuntimeError('Termux server process marker is missing')
+        alive = self.command('shell', 'run-as', TERMUX, '/system/bin/kill', '-0', pid, check=False)
+        if alive.returncode:
+            raise RuntimeError('Managed server is not alive under the Termux UID')
+        cross_uid = self.command('shell', 'run-as', APP, '/system/bin/kill', '-0', pid, check=False)
+        if cross_uid.returncode == 0:
+            raise RuntimeError('Managed server unexpectedly shares the Android host UID')
+
+    def assert_service_stopped(self, token: str, seconds=20):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            try:
+                self.request('/api/me', token)
+            except (OSError, ValueError):
+                return
+            time.sleep(1)
+        raise RuntimeError('Force-stopping Termux left its local service reachable')
 
     def request(self, path: str, token: str):
         request = urllib.request.Request(f'http://127.0.0.1:{PORT}{path}',
@@ -220,6 +348,8 @@ class DeviceSmoke:
         return apk
 
     def diagnostics(self):
+        if not self.emulator_verified:
+            return
         # Retry reading the token before logs so even early-startup failures redact it.
         try:
             self.token()
@@ -228,14 +358,18 @@ class DeviceSmoke:
         if self.last_ui_xml is not None:
             (self.report.parent / 'ui-failure.xml.txt').write_text(
                 self.redact(self.last_ui_xml.decode('utf-8', errors='replace')), encoding='utf-8')
-        try:
-            result = self.command('exec-out', 'run-as', APP, '/system/bin/tail', '-n', '300',
-                                  'files/home/pocket.log', check=False, timeout=10)
-            if result.returncode == 0:
-                (self.report.parent / 'pocket.log.txt').write_text(
-                    self.redact(result.stdout.decode('utf-8', errors='replace')), encoding='utf-8')
-        except Exception:
-            pass
+        for package, relative, name in (
+                (APP, 'files/termux-host.log', 'host.log.txt'),
+                (TERMUX, TERMUX_ROOT + '/logs/setup.log', 'termux-setup.log.txt'),
+                (TERMUX, TERMUX_ROOT + '/logs/server.log', 'termux-server.log.txt')):
+            try:
+                result = self.command('exec-out', 'run-as', package, '/system/bin/tail', '-n', '300',
+                                      relative, check=False, timeout=10)
+                if result.returncode == 0:
+                    (self.report.parent / name).write_text(
+                        self.redact(result.stdout.decode('utf-8', errors='replace')), encoding='utf-8')
+            except Exception:
+                pass
         try:
             current = self.command('shell', 'pidof', APP, check=False, timeout=10)
             self.pids.update(pid for pid in current.stdout.decode().split() if pid.isdigit())
@@ -250,33 +384,56 @@ class DeviceSmoke:
     def run(self):
         if not self.apk.is_file():
             raise RuntimeError('Test APK does not exist')
-        self.command('wait-for-device', timeout=60)
-        hardware = self.command('shell', 'getprop', 'ro.kernel.qemu').stdout.decode().strip()
-        if hardware != '1':
-            raise RuntimeError('This test only runs on a disposable Android emulator')
-        self.record('Device smoke scope: x86_64 emulator; no model requests or in-flight agent tasks')
+        with zipfile.ZipFile(self.apk) as archive:
+            payload = json.loads(archive.read('assets/payload.json'))
+            if payload.get('schemaVersion') != 2 or payload.get('runtime') != 'termux':
+                raise RuntimeError('Device test requires the installed-Termux payload schema')
+            self.runtime_version = payload.get('runtimeVersion')
+            if not isinstance(self.runtime_version, str) or not self.runtime_version:
+                raise RuntimeError('APK payload version is missing')
+            if 'assets/pocket.tar.gz' not in archive.namelist():
+                raise RuntimeError('Universal APK lacks the original upstream payload')
+            if any(name.startswith('lib/') or name == 'assets/runtime.zip' for name in archive.namelist()):
+                raise RuntimeError('Universal APK unexpectedly contains an embedded native runtime')
+        self.select_emulator()
+        self.record('Device smoke scope: installed-Termux integration on x86_64 emulator; no model requests or in-flight agent tasks')
         termux_apk = self.download_termux()
         self.command('install', '-r', str(termux_apk), timeout=180)
+        self.initialize_termux()
         self.command('shell', 'run-as', TERMUX, 'mkdir', '-p', 'files')
         self.command('shell', 'run-as', TERMUX, '/system/bin/tee', 'files/.pipocket-coexist-sentinel',
                      input_data=SENTINEL)
         self.command('install', '-r', str(self.apk), timeout=180)
+        self.command('shell', 'pm', 'grant', APP, 'android.permission.POST_NOTIFICATIONS', check=False)
         self.packages()
         self.record('PASS: official Termux and Pi Pocket have distinct installed package identities')
         self.command('forward', f'tcp:{PORT}', f'tcp:{PORT}')
+
+        self.command('shell', 'pm', 'revoke', APP, RUN_PERMISSION)
+        self.command('shell', 'pm', 'set-permission-flags', APP, RUN_PERMISSION, 'user-set', 'user-fixed')
         self.start()
-        token, identity = self.wait_ready(300)
+        self.tap_button('连接 Termux 并启动')
+        self.wait_startup_blocked('permission-denied', ('RUN_COMMAND', '需要授权', 'Termux 权限'))
+        self.command('shell', 'am', 'force-stop', APP)
+        self.command('shell', 'pm', 'clear-permission-flags', APP, RUN_PERMISSION, 'user-set', 'user-fixed')
+        self.command('shell', 'pm', 'grant', APP, RUN_PERMISSION)
+        self.set_external_commands(False)
+        self.start()
+        self.wait_startup_blocked('external-commands-disabled', ('allow-external-apps',))
+        self.command('shell', 'am', 'force-stop', APP)
+        self.set_external_commands(True)
+        self.start()
+        # This includes the real first-run pkg installation; CI must not preload the runtime.
+        token, identity = self.wait_ready(900)
         first_started_at = identity.get('server', {}).get('startedAt')
         if not isinstance(first_started_at, (int, float)):
             raise RuntimeError('The local service did not expose a process start timestamp')
-        configured = self.command('shell', 'run-as', APP, 'test', '-f',
-                                  'files/usr/share/pocket-host/configured', check=False)
-        if configured.returncode != 0:
-            raise RuntimeError('Runtime setup success marker is missing')
-        log = self.read_private('files/home/pocket.log') or b''
-        if b'PI_POCKET_RUNTIME_READY' not in log:
-            raise RuntimeError('Runtime setup did not record its self-test completion marker')
-        self.record('PASS: runtime configured; SQLite and child-process/tool self-tests completed')
+        self.verify_termux_server()
+        setup_log = self.read_private(TERMUX_ROOT + '/logs/setup.log', TERMUX) or b''
+        if b'PI_POCKET_TERMUX_SELF_TEST_OK' not in setup_log:
+            raise RuntimeError('Termux deployment did not record its Node.js, SQLite and tool self-test marker')
+        self.record('PASS: Termux Node.js/SQLite and git/rg/fd/curl/tar/npm/flock self-tests completed')
+        self.record('PASS: first-run deployment started the selected upstream payload under the Termux UID')
         status, body, content_type = self.request('/', token)
         if status != 200 or 'html' not in content_type.lower() or b'<html' not in body.lower():
             raise RuntimeError('The original frontend did not return HTML')
@@ -284,17 +441,24 @@ class DeviceSmoke:
         self.record('PASS: authenticated /api/me and original frontend HTML are available')
         self.wait_webview_rendered('initial')
         self.command('shell', 'am', 'force-stop', APP)
-        stopped = False
-        for _ in range(15):
-            try:
-                self.request('/api/me', token)
-            except (OSError, ValueError):
-                stopped = True
-                break
+        for _ in range(5):
+            status, body, _ = self.request('/api/me', token)
+            if status != 200 or json.loads(body).get('server', {}).get('startedAt') != first_started_at:
+                raise RuntimeError('Stopping the Android host interrupted or replaced the Termux service')
             time.sleep(1)
-        if not stopped:
-            raise RuntimeError('Force-stop left the original local service reachable')
-        self.record('PASS: force-stop terminated the local service')
+        self.verify_termux_server()
+        self.record('PASS: force-stopping only Pi Pocket leaves the same Termux server running')
+        self.start()
+        reopened_token, reopened_identity = self.wait_ready(180)
+        if reopened_token != token or reopened_identity.get('server', {}).get('startedAt') != first_started_at:
+            raise RuntimeError('Reopening the host failed to reconnect to the existing owner and server')
+        self.wait_webview_rendered('host-reopened')
+
+        # Stop the host first so its foreground retry loop cannot race this assertion.
+        self.command('shell', 'am', 'force-stop', APP)
+        self.command('shell', 'am', 'force-stop', TERMUX)
+        self.assert_service_stopped(token)
+        self.record('PASS: force-stopping Termux terminates the server it owns')
         self.start()
         recovered_token, recovered_identity = self.wait_ready(180)
         if recovered_token != token:
@@ -308,14 +472,15 @@ class DeviceSmoke:
             raise RuntimeError('Authenticated owner changed after force-stop')
         self.packages()
         self.verify_termux_untouched()
-        self.record('PASS: same owner and local service recovered; official Termux data stayed intact')
-        self.wait_webview_rendered('reopened')
+        self.verify_termux_server()
+        self.record('PASS: reopening Pi Pocket restarts its Termux server with the same owner; pre-existing Termux sentinel stays intact')
+        self.wait_webview_rendered('termux-restarted')
         # Accessibility confirms the DOM is visible; allow the compositor one final frame.
         time.sleep(1)
         screenshot = self.command('exec-out', 'screencap', '-p', check=False).stdout
         if screenshot.startswith(b'\x89PNG\r\n\x1a\n'):
             (self.report.parent / 'frontend.png').write_bytes(screenshot)
-        self.record('RESULT: PASS (emulator startup/render/restart/coexistence; ARM64 hardware and active-task recovery remain separate tests)')
+        self.record('RESULT: PASS (Termux permissions/deployment/render/host reconnect/Termux restart; physical devices and active-task recovery remain separate tests)')
 
 
 def main():
@@ -331,10 +496,11 @@ def main():
         smoke.diagnostics()
         return 1
     finally:
-        try:
-            smoke.command('forward', '--remove', f'tcp:{PORT}', check=False, timeout=10)
-        except Exception:
-            pass
+        if smoke.emulator_verified:
+            try:
+                smoke.command('forward', '--remove', f'tcp:{PORT}', check=False, timeout=10)
+            except Exception:
+                pass
     return 0
 
 

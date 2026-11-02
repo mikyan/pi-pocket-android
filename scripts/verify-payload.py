@@ -1,53 +1,53 @@
-"""Check offline payload integrity and byte-for-byte upstream source preservation."""
+"""Verify portable Termux payload safety, dependency links, and unchanged upstream bytes."""
 import hashlib
 import json
-from pathlib import Path, PurePosixPath
-import zipfile
+from pathlib import Path
+import tarfile
+
+from prepare import HOST_SCRIPTS, excluded_dependency_files, file_digest, portable_entries, runtime_version, safe_name, validate_links, validate_source
 
 ROOT = Path(__file__).resolve().parent.parent
-ASSETS = ROOT / 'app/src/main/assets'
-payload = json.loads((ASSETS / 'payload.json').read_text())
-lock_name = payload.get('runtimeLock', 'runtime.lock.json')
-assert lock_name in ('runtime.lock.json', 'runtime-x86_64.lock.json')
-runtime = json.loads((ROOT / lock_name).read_text())
-upstream = json.loads((ROOT / 'upstream.lock.json').read_text())
-assert payload['piPocketCommit'] == upstream['commit']
-assert payload['piPocketVersion'] == upstream['version']
-archive_path = ASSETS / 'runtime.zip'
-assert hashlib.sha256(archive_path.read_bytes()).hexdigest() == payload['sha256']
-with zipfile.ZipFile(archive_path) as archive:
-    names = archive.namelist()
-    assert len(names) == len(set(names)), 'Duplicate payload entries'
-    for name in names:
-        path = PurePosixPath(name)
-        assert not path.is_absolute() and '..' not in path.parts and '\\' not in name, name
-    permissions = json.loads(archive.read('permissions.json'))
-    for name, mode in permissions.items():
-        assert name in names and isinstance(mode, int) and 0 <= mode <= 0o777
+
+
+def verify(root=ROOT):
+    assets = root / 'app/src/main/assets'
+    payload = json.loads((assets / 'payload.json').read_text(encoding='utf-8'))
+    lock = json.loads((root / 'upstream.lock.json').read_text(encoding='utf-8'))
+    assert payload['schemaVersion'] == 2 and payload['runtime'] == 'termux'
+    assert payload['archive'] == 'pocket.tar.gz' and 'architecture' not in payload
+    assert payload['piPocketCommit'] == lock['commit'] and payload['piPocketVersion'] == lock['version']
+    assert payload['minimumNode'] == lock['minimumNode']
+    archive_path = assets / payload['archive']
+    assert file_digest(archive_path) == payload['sha256']
+    assert not (assets / 'runtime.zip').exists(), 'Obsolete embedded runtime must not ship'
+    source = root / '.cache/upstream'
+    checked = validate_source(source, root / '.cache' / f'upstream-{lock["commit"]}.tar', lock)
+    files, modes, expected_links = portable_entries(source)
+    assert payload['excludedDependencyFiles'] == excluded_dependency_files(source)
     links = {}
-    for line in archive.read('SYMLINKS.txt').decode().splitlines():
-        target, link = line.split('←')
-        assert link not in names and link not in links, link
-        assert '..' not in PurePosixPath(link).parts and not link.startswith('/')
-        links[link] = target
-    for package in runtime['packages']:
-        filename = PurePosixPath(package['Filename']).name.replace(':', '_')
-        data = archive.read('share/runtime-packages/' + filename)
-        assert hashlib.sha256(data).hexdigest() == package['SHA256'], filename
-    assert 'nodejs-lts' in {p['Package'] for p in runtime['packages']}
-    assert 'nodejs' not in {p['Package'] for p in runtime['packages']}
-    assert {'proot', 'libtalloc', 'libandroid-shmem'}.issubset({p['Package'] for p in runtime['packages']})
-    checked = 0
-    source = ROOT / '.cache/upstream'
-    for directory in ('src', 'web', 'bin'):
-        for path in (source / directory).rglob('*'):
-            if path.is_file():
-                relative = path.relative_to(source).as_posix()
-                assert archive.read('share/pi-pocket/' + relative) == path.read_bytes(), relative
-                checked += 1
-    for filename in ('package.json', 'package-lock.json', 'LICENSE'):
-        assert archive.read('share/pi-pocket/' + filename) == (source / filename).read_bytes()
-    for executable in ('bin/bash', 'bin/dpkg', 'bin/proot', 'libexec/proot/loader', 'share/pocket-host/setup-runtime.sh', 'share/pocket-host/launch-pocket.sh'):
-        assert permissions[executable] & 0o100, executable
-print(f'PASS: {len(names)} archive files, {len(runtime["packages"])} verified Android packages, '
-      f'{checked} unchanged upstream source/frontend/entry files, {len(links)} safe link paths')
+    with tarfile.open(archive_path, 'r:gz') as archive:
+        members = archive.getmembers()
+        names = [safe_name(member.name) for member in members]
+        assert len(names) == len(set(names)), 'Duplicate payload entries'
+        assert set(names) == set(files) | set(expected_links), 'Unexpected or omitted portable files'
+        for member in members:
+            assert not member.mode & 0o7000, 'Special permission bits are forbidden'
+            if member.issym():
+                links[member.name] = member.linkname
+            else:
+                assert member.isfile(), 'Only regular files and symlinks are supported'
+                assert member.mode == modes[member.name]
+                with archive.extractfile(member) as stream:
+                    assert hashlib.file_digest(stream, 'sha256').hexdigest() == file_digest(files[member.name]), member.name
+        assert links == expected_links
+        validate_links(set(files), links)
+    for name in HOST_SCRIPTS:
+        expected = (root / 'scripts' / name).read_bytes().replace(b'\r\n', b'\n')
+        assert (assets / name).read_bytes() == expected, name
+        assert payload['hostScripts'][name] == hashlib.sha256(expected).hexdigest()
+    assert payload['runtimeVersion'] == runtime_version(lock['commit'], payload['sha256'], payload['hostScripts']), 'Payload identity must bind archive and host scripts'
+    print(f'PASS: {len(files)} portable files, {checked} unchanged upstream files, {len(links)} safe POSIX links; installed Termux required')
+
+
+if __name__ == '__main__':
+    verify()

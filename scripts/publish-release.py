@@ -17,7 +17,8 @@ SHA256 = re.compile(r'[0-9a-f]{64}')
 VERSION = re.compile(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)')
 TAG = re.compile(r'android-([0-9]+)-pi-(.+)')
 MARKER = re.compile(r'^<!-- pi-pocket-android (\{[^\r\n]+\}) -->$', re.MULTILINE)
-FIXED_FILES = {'upstream.lock.json', 'runtime.lock.json', 'payload.json', 'BUILD.json', 'BUILD.txt'}
+FIXED_FILES = {'upstream.lock.json', 'termux-requirements.json', 'payload.json', 'BUILD.json', 'BUILD.txt'}
+HOST_SCRIPTS = ('setup-runtime.sh', 'launch-pocket.sh')
 
 
 def require(condition, message):
@@ -28,6 +29,12 @@ def require(condition, message):
 def digest(path):
     with Path(path).open('rb') as handle:
         return hashlib.file_digest(handle, 'sha256').hexdigest()
+
+
+def runtime_version(commit, archive_sha256, script_hashes):
+    identity = json.dumps({'archiveSha256': archive_sha256, 'hostScripts': script_hashes},
+                          sort_keys=True, separators=(',', ':')).encode('utf-8')
+    return commit[:12] + '-' + hashlib.sha256(identity).hexdigest()[:12]
 
 
 def run(command, *, cwd=ROOT, input=None, env=None):
@@ -48,6 +55,7 @@ def validate_dist(dist, environment):
     dist = Path(dist).resolve()
     build = read_json(dist / 'BUILD.json')
     require(build.get('schemaVersion') == 1, 'Unsupported BUILD schema')
+    require(build.get('runtime') == 'termux', 'Build must use installed Termux')
     require(environment.get('GITHUB_REPOSITORY') == REPOSITORY, 'Unexpected repository')
     require(build.get('repository') == REPOSITORY, 'Artifact belongs to another repository')
     require(SHA.fullmatch(environment.get('GITHUB_SHA', '')) is not None, 'Invalid base SHA')
@@ -62,7 +70,7 @@ def validate_dist(dist, environment):
     require(type(build.get('versionCode')) is int and build['versionCode'] == 1000 + number,
             'Version code does not belong to this workflow run')
     require(build['versionCode'] <= 2100000000, 'Android version code limit exceeded')
-    require(build.get('versionName') == f'0.2.0-ci.{number}', 'Version name mismatch')
+    require(build.get('versionName') == f'0.3.0-ci.{number}', 'Version name mismatch')
     require(isinstance(build.get('upstreamVersion'), str) and VERSION.fullmatch(build['upstreamVersion']),
             'Only stable semantic upstream versions may be published')
     require(isinstance(build.get('upstreamCommit'), str) and SHA.fullmatch(build['upstreamCommit']),
@@ -70,7 +78,7 @@ def validate_dist(dist, environment):
     require(isinstance(build.get('upstreamLockSha256'), str) and SHA256.fullmatch(build['upstreamLockSha256']),
             'Invalid upstream lock digest')
     apk = build.get('apk', {})
-    expected_name = f'pi-pocket-android-{build["versionName"]}-arm64-debug.apk'
+    expected_name = f'pi-pocket-android-{build["versionName"]}-universal-debug.apk'
     require(isinstance(apk, dict) and apk.get('name') == expected_name, 'Unexpected APK filename')
     require(isinstance(apk.get('sha256'), str) and SHA256.fullmatch(apk['sha256']), 'Invalid APK digest')
     names = FIXED_FILES | {expected_name, 'SHA256SUMS.txt'}
@@ -95,25 +103,37 @@ def validate_dist(dist, environment):
     require(lock.get('schemaVersion') == 1 and lock.get('repository') == UPSTREAM, 'Unexpected upstream lock')
     require(lock.get('commit') == build['upstreamCommit'] and lock.get('version') == build['upstreamVersion'],
             'Candidate lock differs from tested upstream')
-    runtime = read_json(dist / 'runtime.lock.json')
-    require(runtime.get('schemaVersion') == 1 and runtime.get('architecture') == 'aarch64', 'Expected ARM64 runtime')
+    requirements = read_json(dist / 'termux-requirements.json')
+    require(requirements.get('schemaVersion') == 1 and requirements.get('runtime') == 'termux'
+            and requirements.get('packageName') == 'com.termux', 'Expected installed-Termux requirements')
     payload = read_json(dist / 'payload.json')
-    require(payload.get('schemaVersion') == 1 and payload.get('architecture') == 'arm64-v8a'
-            and payload.get('runtimeLock') == 'runtime.lock.json', 'Expected ARM64 payload')
+    require(payload.get('schemaVersion') == 2 and payload.get('runtime') == 'termux'
+            and payload.get('archive') == 'pocket.tar.gz' and 'architecture' not in payload,
+            'Expected universal installed-Termux payload')
     require(payload.get('piPocketCommit') == build['upstreamCommit']
             and payload.get('piPocketVersion') == build['upstreamVersion'], 'APK payload upstream mismatch')
+    require(isinstance(lock.get('minimumNode'), str) and VERSION.fullmatch(lock['minimumNode'])
+            and payload.get('minimumNode') == lock['minimumNode'], 'Minimum Node.js requirement mismatch')
     require(isinstance(payload.get('sha256'), str) and SHA256.fullmatch(payload['sha256']), 'Invalid payload digest')
     with zipfile.ZipFile(dist / expected_name) as archive:
-        for name in ('assets/payload.json', 'assets/runtime.zip'):
+        for name in ('assets/payload.json', 'assets/pocket.tar.gz', *('assets/' + name for name in HOST_SCRIPTS)):
             require(archive.namelist().count(name) == 1, f'APK must contain exactly one {name}')
+        require('assets/runtime.zip' not in archive.namelist()
+                and not any(name.startswith('lib/') for name in archive.namelist()), 'APK must not embed a native runtime')
         require(archive.read('assets/payload.json') == (dist / 'payload.json').read_bytes(), 'APK embeds another manifest')
-        with archive.open('assets/runtime.zip') as handle:
-            require(hashlib.file_digest(handle, 'sha256').hexdigest() == payload['sha256'], 'APK embeds another runtime')
+        with archive.open('assets/pocket.tar.gz') as handle:
+            require(hashlib.file_digest(handle, 'sha256').hexdigest() == payload['sha256'], 'APK embeds another payload')
+        scripts = payload.get('hostScripts', {})
+        require(isinstance(scripts, dict) and set(scripts) == set(HOST_SCRIPTS), 'Missing host script integrity metadata')
+        for name in HOST_SCRIPTS:
+            require(hashlib.sha256(archive.read('assets/' + name)).hexdigest() == scripts[name], 'APK host script mismatch')
+        require(payload.get('runtimeVersion') == runtime_version(lock['commit'], payload['sha256'], scripts),
+                'Payload identity must bind archive and host scripts')
     return build, hashes
 
 
 def release_marker(build):
-    return {key: build[key] for key in ('schemaVersion', 'upstreamCommit', 'upstreamLockSha256',
+    return {key: build[key] for key in ('schemaVersion', 'runtime', 'upstreamCommit', 'upstreamLockSha256',
                                        'versionCode', 'baseSha', 'runId')}
 
 
@@ -129,9 +149,10 @@ def release_body(build):
     marker = json.dumps(release_marker(build), separators=(',', ':'))
     return (f'Pi Pocket {build["upstreamVersion"]}, Android version code {build["versionCode"]}.\n\n'
             f'Built from host `{build["baseSha"]}` and upstream `{build["upstreamCommit"]}`.\n\n'
-            'The same upstream candidate passed the Android API 35 x86_64 emulator gate for '
-            'Termux coexistence, rendered frontend and force-stop/reopen. The signed ARM64 APK '
-            'passed packaging, upstream smoke and lint checks. ARM64 hardware and in-flight '
+            'Requires installed official Termux, configured external-app access, and its RUN_COMMAND permission. '
+            'The same upstream candidate passed the emulator gate for Termux startup, rendered frontend '
+            'and host-app force-stop/reopen. The signed universal APK '
+            'passed packaging, upstream smoke and lint checks. Physical hardware and in-flight '
             'model-task recovery have not been tested.\n\n'
             f'[Build and test run](https://github.com/{REPOSITORY}/actions/runs/{build["runId"]})\n\n'
             f'<!-- pi-pocket-android {marker} -->\n')
@@ -149,8 +170,12 @@ class GitRepository:
         origin = self.git('remote', 'get-url', 'origin')
         require(origin in (f'https://github.com/{REPOSITORY}', f'https://github.com/{REPOSITORY}.git',
                            f'git@github.com:{REPOSITORY}.git'), 'Unexpected Git origin')
-        expected = subprocess.check_output(['git', 'show', f'{self.base}:runtime.lock.json'], cwd=self.root)
-        require(expected == (dist / 'runtime.lock.json').read_bytes(), 'Runtime lock differs from tested host source')
+        expected = subprocess.check_output(['git', 'show', f'{self.base}:termux-requirements.json'], cwd=self.root)
+        require(expected == (dist / 'termux-requirements.json').read_bytes(), 'Termux requirements differ from tested host source')
+        payload = read_json(dist / 'payload.json')
+        for name in HOST_SCRIPTS:
+            expected_script = subprocess.check_output(['git', 'show', f'{self.base}:scripts/{name}'], cwd=self.root).replace(b'\r\n', b'\n')
+            require(hashlib.sha256(expected_script).hexdigest() == payload['hostScripts'][name], 'Host script differs from tested source')
 
     def candidate_commit(self, dist, build):
         candidate = (dist / 'upstream.lock.json').read_bytes()

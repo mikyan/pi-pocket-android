@@ -1,24 +1,13 @@
-# 第三方组件与分发记录
+# 第三方组件
 
-本项目是 pi-pocket 的独立 Android 宿主，未修改锁定的上游源码，不是官方 Termux 发行版。应用包名为 `io.github.mikyan.pipocket`；PRoot 内部兼容的 `com.termux` 虚拟路径不表示共享官方 Termux 的应用身份或数据。
+本项目是原版 pi-pocket 的独立 Android 宿主，包名 `io.github.mikyan.pipocket`，不是 Termux 官方发行版。0.3 系列通过公开的 RUN_COMMAND 接口调用用户另行安装的 Termux；APK 不再分发 Termux bootstrap、PRoot、Node、Git 或 GNU 系统工具二进制。
 
-## 已知输入与声明位置
-
-| 组件 | 来源与版本记录 | 声明位置 |
+| APK 中的组件 | 来源和版本 | 声明 |
 | --- | --- | --- |
-| pi-pocket | [TannerMidd/pi-pocket](https://github.com/TannerMidd/pi-pocket)，版本/提交见 `upstream.lock.json` | 上游 `LICENSE`，MIT，Copyright (c) 2026 Tanner Middleton；随源码保留 |
-| pi durable 与 npm 生产依赖 | 固定上游 `package-lock.json` | 各 npm 包的 LICENSE/NOTICE/package.json；随实际生产依赖保留 |
-| Termux bootstrap | `runtime.lock.json` 中固定发布 URL 与 SHA-256 | bootstrap 中 `share/doc`、`share/LICENSES` 及包记录 |
-| PRoot、libtalloc、libandroid-shmem | Termux 包仓库，固定版本与 SHA-256 见运行锁文件 | 原始 deb 中许可证与声明随包保留 |
-| Node.js、Git、bash、GNU 工具与其他 Android 包 | [Termux 包仓库](https://github.com/termux/termux-packages)，完整二进制版本与 SHA-256 见 `runtime.lock.json` | 各包自己的许可证与版权声明；不能统一标记为 MIT |
-| Android Gradle 构建工具 | 根 `build.gradle` 与 Gradle wrapper 配置 | 各工具的上游许可 |
+| pi-pocket | [TannerMidd/pi-pocket](https://github.com/TannerMidd/pi-pocket)，见 `upstream.lock.json` | 上游 MIT LICENSE 原样随源码保留 |
+| pi durable 与 npm 生产依赖 | 上游原始 `package-lock.json` | 保留各包的 LICENSE、NOTICE 与 package.json，不能统一视为 MIT |
+| Android 构建工具 | Gradle wrapper 与构建脚本 | 使用各工具自己的许可证 |
 
-Termux app 仓库本身声明 [GPLv3-only 与组件例外](https://github.com/termux/termux-app/blob/master/LICENSE.md)。本项目宿主源码与运行包应按实际复用内容分别记录；仅引用 Termux 设计或包名不能替代逐组件许可判断。Node.js、OpenSSL、Git、bash、npm 等也各有自己的许可，最终以锁定版本携带的声明为准。
+Termux 及通过其包管理器安装的工具来自各自分发渠道，独立于本 APK 的资产；对应许可证由各上游提供。这里的来源说明不替代依赖自身的许可文本。
 
-## 发布材料状态
-
-当前工程记录了二进制来源、版本和 SHA-256，并保留包内及上游随附声明。它**尚未提供一份完整、逐组件归档的对应源码发行包**。这些记录不能单独替代适用许可证要求的源码及构建材料。
-
-面向第三方分发 APK 前，应按本次实际二进制清单补齐并核对：对应版本源码、Termux 构建配方与补丁、必要的构建说明、版权和许可文本，以及适用许可证要求的源码提供方式。特别是包含 GPL/LGPL 等组件时，应核对最终分发形态，不能只附最新上游仓库链接便声称材料完整。
-
-维护者更新 `runtime.lock.json` 或 `upstream.lock.json` 时，应同步更新这份记录和对应发布材料。不要删除 payload 内已有的版权、LICENSE 或 NOTICE 文件。
+构建时不删除上游或 npm 依赖的版权声明，发布工件记录源提交、包锁和归档哈希。旧 0.2 系列内置二进制 APK 的分发材料与许可证边界仅适用于那些历史产物，不能以本次架构变更追溯替代。

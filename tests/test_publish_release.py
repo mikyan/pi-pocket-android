@@ -100,19 +100,22 @@ class ReleaseSafety(unittest.TestCase):
         self.lock = {'schemaVersion': 1, 'repository': publisher.UPSTREAM, 'commit': 'b' * 40,
                      'version': '0.27.0', 'minimumNode': '22.19.0'}
         self.write_json('upstream.lock.json', self.lock)
-        self.write_json('runtime.lock.json', {'schemaVersion': 1, 'architecture': 'aarch64'})
+        self.write_json('termux-requirements.json', {'schemaVersion': 1, 'runtime': 'termux', 'packageName': 'com.termux'})
         runtime = b'the exact prepared Android runtime archive'
-        self.payload = {'schemaVersion': 1, 'architecture': 'arm64-v8a', 'runtimeLock': 'runtime.lock.json',
+        self.payload = {'schemaVersion': 2, 'runtime': 'termux', 'archive': 'pocket.tar.gz', 'minimumNode': '22.19.0',
                         'piPocketCommit': self.lock['commit'], 'piPocketVersion': self.lock['version'],
-                        'sha256': sha(runtime)}
+                        'sha256': sha(runtime), 'hostScripts': {name: sha(b'fixture script') for name in publisher.HOST_SCRIPTS}}
+        self.payload['runtimeVersion'] = publisher.runtime_version(self.lock['commit'], self.payload['sha256'], self.payload['hostScripts'])
         self.write_json('payload.json', self.payload)
-        self.apk_name = 'pi-pocket-android-0.2.0-ci.3-arm64-debug.apk'
+        self.apk_name = 'pi-pocket-android-0.3.0-ci.3-universal-debug.apk'
         with zipfile.ZipFile(self.dist / self.apk_name, 'w') as archive:
             archive.writestr('assets/payload.json', (self.dist / 'payload.json').read_bytes())
-            archive.writestr('assets/runtime.zip', runtime)
-        self.build = {'schemaVersion': 1, 'baseSha': 'a' * 40, 'repository': publisher.REPOSITORY,
+            archive.writestr('assets/pocket.tar.gz', runtime)
+            for name in publisher.HOST_SCRIPTS:
+                archive.writestr('assets/' + name, b'fixture script')
+        self.build = {'schemaVersion': 1, 'runtime': 'termux', 'baseSha': 'a' * 40, 'repository': publisher.REPOSITORY,
                       'runId': '1234567', 'runNumber': 3, 'runAttempt': 1, 'versionCode': 1003,
-                      'versionName': '0.2.0-ci.3', 'upstreamCommit': self.lock['commit'],
+                      'versionName': '0.3.0-ci.3', 'upstreamCommit': self.lock['commit'],
                       'upstreamVersion': self.lock['version'],
                       'upstreamLockSha256': publisher.digest(self.dist / 'upstream.lock.json'),
                       'apk': {'name': self.apk_name, 'sha256': publisher.digest(self.dist / self.apk_name)}}
@@ -167,11 +170,13 @@ class ReleaseSafety(unittest.TestCase):
     def test_reject_changed_apk_even_if_build_and_outer_checksums_are_updated(self):
         with zipfile.ZipFile(self.dist / self.apk_name, 'w') as archive:
             archive.writestr('assets/payload.json', (self.dist / 'payload.json').read_bytes())
-            archive.writestr('assets/runtime.zip', b'wrong runtime')
+            archive.writestr('assets/pocket.tar.gz', b'wrong payload')
+            for name in publisher.HOST_SCRIPTS:
+                archive.writestr('assets/' + name, b'fixture script')
         self.build['apk']['sha256'] = publisher.digest(self.dist / self.apk_name)
         self.write_json('BUILD.json', self.build)
         self.refresh_checksums()
-        with self.assertRaisesRegex(RuntimeError, 'another runtime'):
+        with self.assertRaisesRegex(RuntimeError, 'another payload'):
             self.validate()
 
     def test_reject_partial_checksum_coverage_and_unsafe_names(self):
@@ -182,6 +187,48 @@ class ReleaseSafety(unittest.TestCase):
             self.validate()
         checksums.write_text('0' * 64 + '  ../outside\n')
         with self.assertRaisesRegex(RuntimeError, 'Invalid SHA256SUMS'):
+            self.validate()
+
+    def test_embedded_native_runtime_is_rejected_even_with_valid_outer_hashes(self):
+        with zipfile.ZipFile(self.dist / self.apk_name, 'a') as archive:
+            archive.writestr('assets/runtime.zip', b'obsolete embedded runtime')
+        self.build['apk']['sha256'] = publisher.digest(self.dist / self.apk_name)
+        self.write_json('BUILD.json', self.build)
+        self.refresh_checksums()
+        with self.assertRaisesRegex(RuntimeError, 'must not embed'):
+            self.validate()
+
+    def test_payload_identity_cannot_ignore_host_script_fixes(self):
+        self.payload['runtimeVersion'] = self.lock['commit'][:12] + '-' + self.payload['sha256'][:12]
+        self.write_json('payload.json', self.payload)
+        with zipfile.ZipFile(self.dist / self.apk_name, 'w') as archive:
+            archive.writestr('assets/payload.json', (self.dist / 'payload.json').read_bytes())
+            archive.writestr('assets/pocket.tar.gz', b'the exact prepared Android runtime archive')
+            for name in publisher.HOST_SCRIPTS:
+                archive.writestr('assets/' + name, b'fixture script')
+        self.build['apk']['sha256'] = publisher.digest(self.dist / self.apk_name)
+        self.write_json('BUILD.json', self.build)
+        self.refresh_checksums()
+        with self.assertRaisesRegex(RuntimeError, 'identity must bind'):
+            self.validate()
+
+    def test_host_script_and_node_requirements_are_bound_to_payload(self):
+        self.payload['hostScripts']['setup-runtime.sh'] = '0' * 64
+        self.write_json('payload.json', self.payload)
+        with zipfile.ZipFile(self.dist / self.apk_name, 'w') as archive:
+            archive.writestr('assets/payload.json', (self.dist / 'payload.json').read_bytes())
+            archive.writestr('assets/pocket.tar.gz', b'the exact prepared Android runtime archive')
+            for name in publisher.HOST_SCRIPTS:
+                archive.writestr('assets/' + name, b'fixture script')
+        self.build['apk']['sha256'] = publisher.digest(self.dist / self.apk_name)
+        self.write_json('BUILD.json', self.build)
+        self.refresh_checksums()
+        with self.assertRaisesRegex(RuntimeError, 'host script mismatch'):
+            self.validate()
+        self.payload['minimumNode'] = '26.0.0'
+        self.write_json('payload.json', self.payload)
+        self.refresh_checksums()
+        with self.assertRaisesRegex(RuntimeError, 'Node.js requirement mismatch'):
             self.validate()
 
     def test_draft_assets_are_verified_before_main_and_publication(self):

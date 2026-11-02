@@ -33,7 +33,7 @@ class ReleasePlanning(unittest.TestCase):
             self.assertEqual(plan.make_plan(event, ref, True, True, True, False)["publish"], "false")
 
     def test_draft_and_mismatched_commit_do_not_suppress_retry(self):
-        marker = {"schemaVersion": 1, "upstreamCommit": "a" * 40, "upstreamLockSha256": "b" * 64}
+        marker = {"schemaVersion": 1, "runtime": "termux", "upstreamCommit": "a" * 40, "upstreamLockSha256": "b" * 64}
         release = {"draft": False, "prerelease": False, "body": "<!-- pi-pocket-android " + json.dumps(marker) + " -->"}
         lock = {"commit": "a" * 40}
         self.assertTrue(plan.already_published([release], lock, "b" * 64))
@@ -42,11 +42,16 @@ class ReleasePlanning(unittest.TestCase):
         self.assertFalse(plan.already_published([release], lock, "c" * 64))
         self.assertFalse(plan.already_published([release], {"commit": "c" * 40}, "b" * 64))
 
-    def test_node_requirement_cannot_outrun_either_android_runtime(self):
-        runtime = {"packages": [{"Package": "nodejs-lts", "Version": "24.22.2-1"}]}
+    def test_node_requirement_cannot_outrun_ci_compatibility_coverage(self):
+        runtime = {"schemaVersion": 1, "runtime": "termux", "packageName": "com.termux", "testedNodeMajor": 24}
         plan.validate_runtime({"minimumNode": "22.19.0"}, runtime)
         with self.assertRaises(ValueError):
             plan.validate_runtime({"minimumNode": "26.0.0"}, runtime)
+
+    def test_old_embedded_runtime_release_does_not_suppress_termux_build(self):
+        marker = {"schemaVersion": 1, "upstreamCommit": "a" * 40, "upstreamLockSha256": "b" * 64}
+        release = {"draft": False, "prerelease": False, "body": "<!-- pi-pocket-android " + json.dumps(marker) + " -->"}
+        self.assertFalse(plan.already_published([release], {"commit": "a" * 40}, "b" * 64))
 
 
 class ReleaseCollection(unittest.TestCase):
@@ -57,14 +62,14 @@ class ReleaseCollection(unittest.TestCase):
                 "app/build/outputs/apk/debug/app-debug.apk": b"fixture APK",
                 "app/src/main/assets/payload.json": b"{}",
                 "upstream.lock.json": json.dumps({"version": "0.27.0", "commit": "c" * 40}).encode(),
-                "runtime.lock.json": b"{}",
+                "termux-requirements.json": b"{}",
             }.items():
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(content)
             env = {"GITHUB_RUN_NUMBER": "3", "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1",
                    "GITHUB_SHA": "a" * 40, "GITHUB_REPOSITORY": "example/repo",
-                   "POCKET_VERSION_CODE": "1003", "POCKET_VERSION_NAME": "0.2.0-ci.3"}
+                   "POCKET_VERSION_CODE": "1003", "POCKET_VERSION_NAME": "0.3.0-ci.3"}
             metadata = collect.collect(root, env)
             self.assertEqual(metadata["versionCode"], 1003)
             self.assertEqual(metadata["baseSha"], "a" * 40)

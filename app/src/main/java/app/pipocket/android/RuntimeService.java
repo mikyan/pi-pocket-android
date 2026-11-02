@@ -5,235 +5,162 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
-import android.os.IBinder;
+import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.net.Uri;
 import android.os.Build;
-
-import java.io.BufferedReader;
+import android.os.IBinder;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileOutputStream;
-import java.io.InputStreamReader;
 import java.io.RandomAccessFile;
 import java.net.HttpURLConnection;
-import java.net.InetSocketAddress;
-import java.net.Socket;
+import java.net.Proxy;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.TimeUnit;
+import java.util.UUID;
 
-/** Owns the local launcher; user data stays outside the replaceable runtime. */
+/** Termux owns the long-running command; host process death never stops user tasks. */
 public final class RuntimeService extends Service {
     static final int PORT = 18787;
     static final String ORIGIN = "http://127.0.0.1:" + PORT;
-    static final String GUEST_FILES = "/data/data/com.termux/files";
-    static final String GUEST_PREFIX = GUEST_FILES + "/usr";
-    static final String GUEST_HOME = GUEST_FILES + "/home";
-    static volatile String status = "正在启动 Pi Pocket…";
+    static final String RUN_COMMAND_PERMISSION = "com.termux.permission.RUN_COMMAND";
+    static final String ACTION_RESTART = "app.pipocket.android.RESTART_TERMUX";
+    static volatile String status = "正在连接 Termux…";
     static volatile String error;
     static volatile boolean ready;
     private volatile boolean starting;
     private volatile boolean destroyed;
-    private volatile Process launcher;
-    private final Object logLock = new Object();
+    private volatile AssetTransfer transfer;
+    private int latestStartId;
+    private static final Object LOG_LOCK = new Object();
 
     @Override public void onCreate() {
         super.onCreate();
         NotificationManager manager = getSystemService(NotificationManager.class);
-        manager.createNotificationChannel(new NotificationChannel("runtime", "Pi Pocket 运行状态", NotificationManager.IMPORTANCE_LOW));
-        startForeground(1, notification("正在准备本地运行环境"));
+        manager.createNotificationChannel(new NotificationChannel("runtime", "Pi Pocket 连接状态", NotificationManager.IMPORTANCE_LOW));
+        startForeground(1, notification("正在连接 Termux"));
     }
 
     @Override public synchronized int onStartCommand(Intent intent, int flags, int startId) {
-        if (!starting && (launcher == null || !launcher.isAlive())) {
+        latestStartId = startId;
+        startForeground(1, notification(status));
+        if (!starting) {
             starting = true;
             error = null;
-            new Thread(this::runRuntime, "pocket-runtime").start();
+            boolean restart = intent != null && ACTION_RESTART.equals(intent.getAction());
+            new Thread(() -> runRuntime(restart), "pocket-termux-connect").start();
         }
-        return START_STICKY;
+        return START_NOT_STICKY;
     }
 
-    private void runRuntime() {
+    private void runRuntime(boolean restart) {
         try {
             ready = false;
+            getPackageManager().getPackageInfo("com.termux", 0);
+            if (checkSelfPermission(RUN_COMMAND_PERMISSION) != PackageManager.PERMISSION_GRANTED) {
+                throw new IllegalStateException("请授予 Pi Pocket 的 Termux 命令权限（RUN_COMMAND），然后重试。");
+            }
+            TermuxPayload payload = new TermuxPayload(this);
             String token = ownerToken(this);
-            if (token != null && authenticatedReady(token)) {
-                ready = true;
-                setStatus(RuntimeInstaller.isCurrent(this) ? "Pi Pocket 正在运行" : "已连接现有任务；完整停止应用后可安装新组件");
+            if (!restart && token != null && authenticatedReady(token)) {
+                connected(payload.version);
                 return;
             }
-            if (portInUse()) throw new IllegalStateException("本地端口 " + PORT + " 已被占用或服务尚未就绪。请稍候重试；若持续出现，请在系统设置中完整停止此应用后重新打开。");
-            verifyRuntimeUnlocked();
-            File prefix = RuntimeInstaller.install(this, this::setStatus);
-            File home = new File(getFilesDir(), "home");
-            File workspace = new File(home, "workspace");
-            RuntimeInstaller.mkdir(workspace);
-            RuntimeInstaller.mkdir(new File(prefix, "tmp"));
-            File configured = new File(prefix, "share/pocket-host/configured");
-            if (!configured.isFile()) {
-                setStatus("正在配置内置 Node.js、Git 和命令行工具…");
-                Process configuration = process(prefix, home, GUEST_PREFIX + "/bin/bash",
-                    GUEST_PREFIX + "/share/pocket-host/setup-runtime.sh").start();
-                drain(configuration);
-                int result = configuration.waitFor();
-                if (result != 0 || !configured.isFile()) throw new IllegalStateException("运行环境配置失败（退出码 " + result + "）。可查看日志后重试。");
+            String nonce = UUID.randomUUID().toString();
+            preferences(this).edit().putString("requestNonce", nonce).putLong("requestAt", System.currentTimeMillis())
+                .remove("resultNonce").remove("resultError").remove("acceptedNonce").commit();
+            setStatus("正在确认 Termux 命令权限与外部应用设置…");
+            dispatch(nonce, "ping", "printf '%s\\n' 'POCKET_RESULT:{\"status\":\"accepted\"}'\n");
+            long deadline = System.currentTimeMillis() + 30_000L;
+            while (!destroyed && !nonce.equals(preferences(this).getString("acceptedNonce", ""))) {
+                checkFailure(nonce);
+                if (System.currentTimeMillis() > deadline) throw new IllegalStateException("Termux 未接受命令。请打开 Termux 并启用 allow-external-apps=true，随后重试。");
+                Thread.sleep(250);
             }
             if (destroyed) return;
-            setStatus("正在恢复本地会话…");
-            launcher = process(prefix, home,
-                GUEST_PREFIX + "/bin/bash",
-                GUEST_PREFIX + "/share/pocket-host/launch-pocket.sh",
-                "--access", "local", "--host", "127.0.0.1", "--port", Integer.toString(PORT),
-                "--data", GUEST_HOME + "/.pi-pocket",
-                "--cwd", GUEST_HOME + "/workspace", "-y").start();
-            new Thread(() -> {
-                try { drain(launcher); }
-                catch (Exception e) { appendLog("[host] 输出读取中断：" + e.getClass().getSimpleName()); }
-            }, "pocket-output").start();
-            long deadline = System.currentTimeMillis() + 180_000;
-            while (!destroyed && launcher.isAlive() && System.currentTimeMillis() < deadline) {
-                token = ownerToken(this);
-                if (token != null && authenticatedReady(token)) {
-                    ready = true;
-                    setStatus("Pi Pocket 正在运行");
-                    break;
+            setStatus(restart ? "正在请求 Termux 停止并重启 Pi Pocket…" : "正在 Termux 中准备依赖并恢复会话；首次安装可能需要数分钟…");
+            transfer = new AssetTransfer(this);
+            String url = transfer.url();
+            dispatch(nonce, "setup", payload.script(this, url, nonce, restart ? "restart" : "start"));
+            dispatch(nonce, "probe", payload.script(this, "", nonce, "probe"));
+            deadline = System.currentTimeMillis() + 19 * 60_000L;
+            while (!destroyed && System.currentTimeMillis() < deadline) {
+                checkFailure(nonce);
+                if (nonce.equals(preferences(this).getString("resultNonce", ""))) {
+                    token = ownerToken(this);
+                    if (token != null && authenticatedReady(token)) {
+                        connected(payload.version);
+                        return;
+                    }
+                    throw new IllegalStateException("Termux 已返回连接信息，但 Pi Pocket 没有通过本地身份验证。请查看启动日志后重试。");
                 }
                 Thread.sleep(500);
             }
-            if (!ready && !destroyed) throw new IllegalStateException("Pi Pocket 未能完成启动。请查看日志；提供商登录可在进入应用后完成。");
-            if (destroyed) return;
-            int result = launcher.waitFor();
-            ready = false;
-            if (!destroyed) throw new IllegalStateException("本地运行进程已退出（" + result + "）。重新打开或点击重试可恢复已保存会话。");
+            if (!destroyed) throw new IllegalStateException("等待 Termux 超时。请确认网络可用后重试。诊断日志：~/.local/share/pi-pocket-android/logs/。");
+        } catch (PackageManager.NameNotFoundException e) {
+            error = "需要先安装并打开官方 Termux（com.termux），完成首次初始化。";
+            setStatus("需要安装 Termux");
         } catch (Exception e) {
-            ready = false;
-            error = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
-            appendLog("[host] " + error);
-            setStatus("启动需要处理");
+            error = redact(e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(), ownerToken(this));
+            appendLog(this, error);
+            setStatus("Termux 连接需要处理");
         } finally {
-            starting = false;
+            synchronized (this) {
+                AssetTransfer active = transfer;
+                if (active != null) active.close();
+                transfer = null;
+                stopForeground(true);
+                stopSelfResult(latestStartId); // Never stop a newer request already queued by Android.
+                starting = false; // Open the gate only after the old stop request has been issued.
+            }
         }
     }
 
-    private ProcessBuilder process(File prefix, File home, String... arguments) {
-        // Termux paths exist only in this child process's translated view. The
-        // actual files belong to our independent Android package and UID.
-        List<String> command = new ArrayList<>(Arrays.asList(
-            new File(prefix, "bin/proot").getAbsolutePath(),
-            "--kill-on-exit", "-L", "-r", "/",
-            "-b", getApplicationInfo().dataDir + ":/data/data/com.termux!",
-            "-b", getFilesDir().getAbsolutePath() + ":" + GUEST_FILES + "!",
-            "-w", GUEST_HOME,
-            GUEST_PREFIX + "/bin/env", "-i",
-            "HOME=" + GUEST_HOME,
-            "PREFIX=" + GUEST_PREFIX,
-            "PATH=" + GUEST_PREFIX + "/bin:/system/bin:/system/xbin",
-            "TMPDIR=" + GUEST_PREFIX + "/tmp",
-            "LANG=en_US.UTF-8", "TERM=xterm-256color",
-            "SHELL=" + GUEST_PREFIX + "/bin/bash",
-            "LD_LIBRARY_PATH=" + GUEST_PREFIX + "/lib",
-            "SSL_CERT_FILE=" + GUEST_PREFIX + "/etc/tls/cert.pem",
-            "GIT_SSL_CAINFO=" + GUEST_PREFIX + "/etc/tls/cert.pem",
-            "TERMUX__PREFIX=" + GUEST_PREFIX,
-            "TERMUX__HOME=" + GUEST_HOME,
-            "TERMUX_APP__PACKAGE_NAME=" + getPackageName(),
-            "TERMUX__APP_PACKAGE_NAME=" + getPackageName(),
-            "ANDROID__BUILD_VERSION_SDK=" + Build.VERSION.SDK_INT,
-            "ANDROID_ROOT=/system", "ANDROID_DATA=/data",
-            "PI_POCKET_GUARD=off", "NO_COLOR=1"));
-        command.addAll(Arrays.asList(arguments));
-        ProcessBuilder builder = new ProcessBuilder(command);
-        builder.directory(home).redirectErrorStream(true);
-        Map<String, String> env = builder.environment();
-        env.remove("LD_PRELOAD");
-        env.put("LD_LIBRARY_PATH", new File(prefix, "lib").getAbsolutePath());
-        env.put("PROOT_LOADER", new File(prefix, "libexec/proot/loader").getAbsolutePath());
-        File loader32 = new File(prefix, "libexec/proot/loader32");
-        if (loader32.isFile()) env.put("PROOT_LOADER_32", loader32.getAbsolutePath());
-        else env.remove("PROOT_LOADER_32");
-        env.put("PROOT_TMP_DIR", new File(prefix, "tmp").getAbsolutePath());
-        env.put("PROOT_NO_SECCOMP", "1");
-        return builder;
-    }
-
-    private void verifyRuntimeUnlocked() throws Exception {
-        // This is a preflight check, not a lock held over the installation transaction.
-        // Android serializes starts of this non-exported service; launch-pocket.sh holds
-        // the lasting lock in the upstream launcher for the entire server lifetime.
-        File prefix = new File(getFilesDir(), "usr");
-        File home = new File(getFilesDir(), "home");
-        File lock = new File(home, ".pi-pocket/android-host.lock");
-        File flock = new File(prefix, "bin/flock");
-        if (!lock.exists() || !flock.isFile()) return;
-        Process probe = process(prefix, home, GUEST_PREFIX + "/bin/flock", "--exclusive", "--nonblock",
-            GUEST_HOME + "/.pi-pocket/android-host.lock", GUEST_PREFIX + "/bin/true").start();
-        if (!probe.waitFor(5, TimeUnit.SECONDS)) {
-            probe.destroy();
-            throw new IllegalStateException("无法确认后台进程状态。请在系统设置中完整停止此应用后重试。");
-        }
-        if (probe.exitValue() != 0) throw new IllegalStateException("已有任务进程占用运行环境。请稍后重试；升级组件前需在系统设置中完整停止此应用，或重启手机。");
-    }
-
-    private void drain(Process process) throws Exception {
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
-            for (String line; (line = reader.readLine()) != null;) appendLog(line);
+    private void checkFailure(String nonce) {
+        SharedPreferences saved = preferences(this);
+        if (nonce.equals(saved.getString("resultNonce", ""))) {
+            String failure = saved.getString("resultError", "");
+            if (!failure.isEmpty()) throw new IllegalStateException(failure);
         }
     }
 
-    private void appendLog(String text) {
-        synchronized (logLock) {
-            try {
-                File home = new File(getFilesDir(), "home");
-                RuntimeInstaller.mkdir(home);
-                File log = new File(home, "pocket.log");
-                if (log.length() > 2 * 1024 * 1024) {
-                    File previous = new File(home, "pocket.log.1");
-                    if (previous.exists()) previous.delete();
-                    log.renameTo(previous);
-                }
-                String token = ownerToken(this);
-                String clean = redact(text, token);
-                try (FileOutputStream out = new FileOutputStream(log, true)) {
-                    out.write((clean + "\n").getBytes(StandardCharsets.UTF_8));
-                }
-            } catch (Exception ignored) { }
-        }
+    private void dispatch(String nonce, String phase, String script) {
+        Intent callback = new Intent(this, TermuxResultReceiver.class).setData(Uri.parse("pipocket://" + phase + "/" + nonce));
+        int pendingFlags = PendingIntent.FLAG_ONE_SHOT;
+        if (Build.VERSION.SDK_INT >= 31) pendingFlags |= PendingIntent.FLAG_MUTABLE;
+        PendingIntent pending = PendingIntent.getBroadcast(this, 0, callback, pendingFlags);
+        Intent request = new Intent("com.termux.RUN_COMMAND")
+            .setComponent(new ComponentName("com.termux", "com.termux.app.RunCommandService"))
+            .putExtra("com.termux.RUN_COMMAND_PATH", "/data/data/com.termux/files/usr/bin/bash")
+            .putExtra("com.termux.RUN_COMMAND_ARGUMENTS", new String[] {"-s"})
+            .putExtra("com.termux.RUN_COMMAND_STDIN", script)
+            .putExtra("com.termux.RUN_COMMAND_WORKDIR", "/data/data/com.termux/files/home")
+            .putExtra("com.termux.RUN_COMMAND_BACKGROUND", true)
+            .putExtra("com.termux.RUN_COMMAND_PENDING_INTENT", pending)
+            .putExtra("com.termux.RUN_COMMAND_COMMAND_LABEL", "Pi Pocket " + phase)
+            .putExtra("com.termux.RUN_COMMAND_COMMAND_DESCRIPTION", "在 Termux 中连接或启动 Pi Pocket；安装缺少的命令依赖。");
+        if (startService(request) == null) throw new IllegalStateException("Termux 拒绝命令。请打开 Termux 并启用 allow-external-apps=true。");
     }
 
-    static String logs(Context context) {
-        File log = new File(context.getFilesDir(), "home/pocket.log");
-        try (RandomAccessFile in = new RandomAccessFile(log, "r")) {
-            long length = in.length();
-            byte[] bytes = new byte[(int) Math.min(16000, length)];
-            in.seek(length - bytes.length);
-            in.readFully(bytes);
-            return redact(new String(bytes, StandardCharsets.UTF_8), ownerToken(context));
-        } catch (Exception ignored) { return "暂无启动日志。"; }
+    private void connected(String wantedVersion) {
+        ready = true;
+        error = null;
+        String actual = preferences(this).getString("runtimeVersion", "");
+        setStatus(wantedVersion.equals(actual) ? "已连接 Termux 中的 Pi Pocket"
+            : "已连接现有任务；新版组件等待你确认重启后安装");
+        appendLog(this, status);
     }
 
-    private static String redact(String text, String token) {
-        if (token != null && !token.isEmpty()) text = text.replace(token, "[已隐藏]");
-        return text.replaceAll("(?i)([?&](?:token|key|code)=)[^&\\s]+", "$1[已隐藏]")
-            .replaceAll("(?i)(authorization[:=]\\s*(?:bearer\\s+)?)[^\\s]+", "$1[已隐藏]");
-    }
-
-    static String ownerToken(Context context) {
-        try {
-            File config = new File(context.getFilesDir(), "home/.pi-pocket/config.json");
-            String value = RuntimeInstaller.readJson(new FileInputStream(config)).getString("ownerToken");
-            return value.isEmpty() ? null : value;
-        } catch (Exception ignored) { return null; }
-    }
+    static SharedPreferences preferences(Context context) { return context.getSharedPreferences("termux-connection", Context.MODE_PRIVATE); }
+    static String ownerToken(Context context) { return preferences(context).getString("ownerToken", null); }
 
     static boolean authenticatedReady(String token) {
         HttpURLConnection connection = null;
         try {
-            connection = (HttpURLConnection) new URL(ORIGIN + "/api/me").openConnection();
+            connection = (HttpURLConnection) new URL(ORIGIN + "/api/me").openConnection(Proxy.NO_PROXY);
             connection.setConnectTimeout(1500);
             connection.setReadTimeout(1500);
             connection.setInstanceFollowRedirects(false);
@@ -243,32 +170,60 @@ public final class RuntimeService extends Service {
         finally { if (connection != null) connection.disconnect(); }
     }
 
-    private boolean portInUse() {
-        try (Socket socket = new Socket()) {
-            socket.connect(new InetSocketAddress("127.0.0.1", PORT), 500);
-            return true;
-        } catch (Exception ignored) { return false; }
+    static void appendLog(Context context, String text) {
+        synchronized (LOG_LOCK) {
+            try {
+                File log = new File(context.getFilesDir(), "termux-host.log");
+                if (log.length() > 128 * 1024) {
+                    File previous = new File(context.getFilesDir(), "termux-host.log.1");
+                    if (previous.exists()) previous.delete();
+                    log.renameTo(previous);
+                }
+                try (FileOutputStream out = new FileOutputStream(log, true)) {
+                    out.write((redact(text, ownerToken(context)) + "\n").getBytes(StandardCharsets.UTF_8));
+                }
+            } catch (Exception ignored) { }
+        }
+    }
+
+    static String logs(Context context) {
+        File log = new File(context.getFilesDir(), "termux-host.log");
+        try (RandomAccessFile input = new RandomAccessFile(log, "r")) {
+            byte[] bytes = new byte[(int) Math.min(16000, input.length())];
+            input.seek(input.length() - bytes.length);
+            input.readFully(bytes);
+            return redact(new String(bytes, StandardCharsets.UTF_8), ownerToken(context));
+        } catch (Exception ignored) {
+            return "暂无宿主连接日志。Termux 组件日志：~/.local/share/pi-pocket-android/logs/setup.log 和 server.log。";
+        }
+    }
+
+    static String redact(String text, String token) {
+        if (text == null) return "";
+        if (token != null && !token.isEmpty()) text = text.replace(token, "[已隐藏]");
+        return text.replaceAll("http://127\\.0\\.0\\.1:[0-9]+/[^\\s\"']+", "[本地连接地址已隐藏]")
+            .replaceAll("(?i)([?&](?:token|key|code)=)[^&\\s]+", "$1[已隐藏]")
+            .replaceAll("(?i)(authorization[:=]\\s*(?:bearer\\s+)?)[^\\s]+", "$1[已隐藏]")
+            .replaceAll("(?i)(\"(?:ownerToken|token|apiKey)\"\\s*:\\s*\")[^\"]+", "$1[已隐藏]");
     }
 
     private void setStatus(String text) {
         status = text;
-        getSystemService(NotificationManager.class).notify(1, notification(text));
+        if (!destroyed) getSystemService(NotificationManager.class).notify(1, notification(text));
     }
 
     private Notification notification(String text) {
-        Intent open = new Intent(this, MainActivity.class);
-        PendingIntent pending = PendingIntent.getActivity(this, 0, open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        return new Notification.Builder(this, "runtime").setContentTitle("Pi Pocket")
-            .setContentText(text).setSmallIcon(android.R.drawable.stat_notify_sync_noanim)
-            .setContentIntent(pending).setOngoing(true).build();
+        PendingIntent pending = PendingIntent.getActivity(this, 0, new Intent(this, MainActivity.class),
+            PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        return new Notification.Builder(this, "runtime").setContentTitle("Pi Pocket").setContentText(text)
+            .setSmallIcon(android.R.drawable.stat_notify_sync_noanim).setContentIntent(pending).setOngoing(true).build();
     }
 
     @Override public void onDestroy() {
         destroyed = true;
-        ready = false;
-        // Android may restart this service; a surviving child is detected before any new spawn.
-        super.onDestroy();
+        AssetTransfer active = transfer;
+        if (active != null) active.close();
+        super.onDestroy(); // Never stop Termux or its server when this host dies.
     }
-
     @Override public IBinder onBind(Intent intent) { return null; }
 }

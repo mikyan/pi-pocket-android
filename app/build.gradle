@@ -11,12 +11,12 @@ android {
     namespace 'app.pipocket.android'
     compileSdk 36
     defaultConfig {
-        // PRoot maps the packaged runtime's prefix into this app's private files directory.
+        // Commands run in the separately installed Termux app through its public API.
         applicationId 'io.github.mikyan.pipocket'
         minSdk 26
         targetSdk 28
         versionCode Integer.parseInt(System.getenv('POCKET_VERSION_CODE') ?: '1')
-        versionName System.getenv('POCKET_VERSION_NAME') ?: '0.2.0'
+        versionName System.getenv('POCKET_VERSION_NAME') ?: '0.3.0'
     }
     signingConfigs {
         if (pocketKeystore) {
@@ -37,24 +37,42 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
-    androidResources { noCompress += ['zip'] }
+    androidResources { noCompress += ['gz'] }
 }
 
 tasks.register('verifyPayload') {
     doLast {
         def assets = file('src/main/assets')
-        if (!new File(assets, 'runtime.zip').isFile() || !new File(assets, 'payload.json').isFile()) {
-            throw new GradleException('Run python scripts/prepare.py --source <pi-pocket checkout> first. An empty shell APK is not a complete build.')
+        if (!new File(assets, 'pocket.tar.gz').isFile() || !new File(assets, 'payload.json').isFile()) {
+            throw new GradleException('Run python scripts/prepare.py first to package the pinned upstream source and JavaScript dependencies.')
         }
         def manifest = new groovy.json.JsonSlurper().parse(new File(assets, 'payload.json'))
+        if (manifest.schemaVersion != 2 || manifest.runtime != 'termux' || manifest.archive != 'pocket.tar.gz') {
+            throw new GradleException('Expected a Termux integration payload (schema 2)')
+        }
+        def upstream = new groovy.json.JsonSlurper().parse(rootProject.file('upstream.lock.json'))
+        if (manifest.piPocketCommit != upstream.commit || manifest.piPocketVersion != upstream.version || manifest.minimumNode != upstream.minimumNode) {
+            throw new GradleException('Prepared payload does not match upstream.lock.json; rerun prepare.py')
+        }
+        ['setup-runtime.sh', 'launch-pocket.sh'].each { name ->
+            def source = rootProject.file('scripts/' + name).getText('UTF-8').replace('\r\n', '\n').getBytes('UTF-8')
+            def generated = new File(assets, name)
+            if (!generated.isFile() || !java.util.Arrays.equals(generated.bytes, source) ||
+                java.security.MessageDigest.getInstance('SHA-256').digest(source).encodeHex().toString() != manifest.hostScripts[name]) {
+                throw new GradleException('Prepared host scripts are missing or stale; rerun prepare.py')
+            }
+        }
+        if (new File(assets, 'runtime.zip').exists()) {
+            throw new GradleException('Remove the obsolete bundled runtime.zip before building')
+        }
         def digest = java.security.MessageDigest.getInstance('SHA-256')
-        new File(assets, 'runtime.zip').withInputStream { input ->
+        new File(assets, 'pocket.tar.gz').withInputStream { input ->
             byte[] buffer = new byte[65536]
             int n
             while ((n = input.read(buffer)) > 0) digest.update(buffer, 0, n)
         }
         if (digest.digest().encodeHex().toString() != manifest.sha256) {
-            throw new GradleException('Runtime payload checksum does not match payload.json')
+            throw new GradleException('Upstream archive checksum does not match payload.json')
         }
     }
 }

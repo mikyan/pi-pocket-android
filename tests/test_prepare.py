@@ -1,116 +1,160 @@
+import hashlib
 import importlib.util
 import io
+import json
 from pathlib import Path
+import sys
 import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
 
+
 spec = importlib.util.spec_from_file_location('prepare', Path(__file__).parents[1] / 'scripts/prepare.py')
 prepare = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(prepare)
+verify_spec = importlib.util.spec_from_file_location('verify_payload', Path(__file__).parents[1] / 'scripts/verify-payload.py')
+verify = importlib.util.module_from_spec(verify_spec)
+with patch.dict(sys.modules, {'prepare': prepare}):
+    verify_spec.loader.exec_module(verify)
 
-class PackagingBoundaries(unittest.TestCase):
-    def test_reject_archive_traversal(self):
-        for name in ('../home/auth.json', '/data/data/other', 'x/../../escape', 'x\\escape'):
-            with self.assertRaises(ValueError):
+
+class PortablePackaging(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.source = self.root / '.cache/upstream'
+        self.assets = self.root / 'app/src/main/assets'
+        self.lock = {'schemaVersion': 1, 'repository': prepare.REPOSITORY, 'commit': 'a' * 40,
+                     'version': '0.27.0', 'minimumNode': '22.19.0'}
+        self.write(self.root / 'upstream.lock.json', json.dumps(self.lock).encode())
+        package = {'name': 'pi-pocket', 'version': '0.27.0', 'bin': {'pi-pocket': 'bin/pi-pocket.js'}}
+        self.write(self.source / 'package.json', json.dumps(package).encode())
+        self.write(self.source / 'package-lock.json', json.dumps({'version': '0.27.0', 'packages': {'': package}}).encode())
+        self.write(self.source / 'bin/pi-pocket.js', b'#!/usr/bin/env node\n// original launcher\n')
+        self.write(self.source / 'src/server.ts', b'// exact upstream bytes\r\n')
+        self.write(self.source / 'web/main.js', b'export const upstream = true;\n')
+        self.write(self.source / 'LICENSE', b'license text\n')
+        self.archive = self.root / '.cache' / ('upstream-' + self.lock['commit'] + '.tar')
+        with tarfile.open(self.archive, 'w') as archive:
+            for path in sorted(self.source.rglob('*')):
+                if path.is_file():
+                    archive.add(path, arcname=path.relative_to(self.source).as_posix(), recursive=False)
+        for name in prepare.HOST_SCRIPTS:
+            self.write(self.root / 'scripts' / name, b'#!/bin/bash\r\necho fixture\r\n')
+        self.write(self.source / 'node_modules/example/package.json', b'{"name":"example","bin":{"example":"cli.js"}}')
+        self.write(self.source / 'node_modules/example/cli.js', b'#!/usr/bin/env node\n')
+        for shim in ('example', 'example.cmd', 'example.ps1'):
+            self.write(self.source / 'node_modules/.bin' / shim, b'host-specific npm shim')
+
+    @staticmethod
+    def write(path, content):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+
+    def build(self):
+        with patch.object(prepare, 'ROOT', self.root), patch.object(prepare, 'ASSETS', self.assets):
+            return prepare.build_payload(self.source, self.lock)
+
+    def test_archive_rebuilds_posix_bins_and_preserves_upstream_bytes(self):
+        payload = self.build()
+        self.assertEqual(payload['schemaVersion'], 2)
+        self.assertEqual(payload['runtime'], 'termux')
+        self.assertEqual(payload['minimumNode'], self.lock['minimumNode'])
+        self.assertNotIn('architecture', payload)
+        with tarfile.open(self.assets / 'pocket.tar.gz') as archive:
+            self.assertEqual(archive.extractfile('src/server.ts').read(), b'// exact upstream bytes\r\n')
+            entry = archive.getmember('node_modules/.bin/example')
+            self.assertTrue(entry.issym())
+            self.assertEqual(entry.linkname, '../example/cli.js')
+            self.assertEqual(archive.getmember('node_modules/example/cli.js').mode, 0o755)
+            self.assertFalse(any(name.endswith(('.cmd', '.ps1')) for name in archive.getnames()))
+            self.assertFalse(any(name.startswith('share/runtime-packages/') for name in archive.getnames()))
+        verify.verify(self.root)
+
+    def test_payload_is_repeatable_and_scripts_are_separate_assets(self):
+        first = self.build()
+        second = self.build()
+        self.assertEqual(first, second)
+        self.assertEqual((self.assets / 'setup-runtime.sh').read_bytes(), b'#!/bin/bash\necho fixture\n')
+        self.assertEqual(first['hostScripts']['setup-runtime.sh'], prepare.file_digest(self.assets / 'setup-runtime.sh'))
+
+    def test_host_only_fix_changes_runtime_identity_without_changing_upstream_archive(self):
+        original = self.build()
+        self.write(self.root / 'scripts/launch-pocket.sh', b'#!/bin/bash\necho corrected-launcher\n')
+        fixed = self.build()
+        self.assertEqual(original['sha256'], fixed['sha256'])
+        self.assertNotEqual(original['runtimeVersion'], fixed['runtimeVersion'])
+        self.assertEqual(fixed['runtimeVersion'], prepare.runtime_version(self.lock['commit'], fixed['sha256'], fixed['hostScripts']))
+        verify.verify(self.root)
+
+    def test_runtime_identity_is_independent_of_script_dictionary_order(self):
+        scripts = {'setup-runtime.sh': 'b' * 64, 'launch-pocket.sh': 'c' * 64}
+        reversed_scripts = dict(reversed(list(scripts.items())))
+        self.assertEqual(prepare.runtime_version('a' * 40, 'd' * 64, scripts),
+                         prepare.runtime_version('a' * 40, 'd' * 64, reversed_scripts))
+
+    def test_source_tampering_is_detected_against_git_archive(self):
+        prepare.validate_source(self.source, self.archive, self.lock)
+        (self.source / 'src/server.ts').write_bytes(b'modified')
+        with self.assertRaisesRegex(ValueError, 'Upstream source changed'):
+            prepare.validate_source(self.source, self.archive, self.lock)
+
+    def test_modified_tar_fails_integrity_check(self):
+        self.build()
+        with (self.assets / 'pocket.tar.gz').open('ab') as output:
+            output.write(b'unexpected')
+        with self.assertRaises(AssertionError):
+            verify.verify(self.root)
+
+    def test_native_dependencies_are_rejected(self):
+        for name, content in (('binary.node', b'fake'), ('tool', b'\x7fELFfake'), ('tool.exe', b'MZfake')):
+            with self.subTest(name=name):
+                path = self.source / 'node_modules/example' / name
+                path.write_bytes(content)
+                with self.assertRaisesRegex(ValueError, 'Architecture-specific'):
+                    prepare.portable_entries(self.source)
+                path.unlink()
+
+    def test_wasm_shared_modules_remain_and_optional_desktop_helpers_are_omitted(self):
+        self.write(self.source / 'node_modules/quickjs-wasi/extensions/url/url.so', b'\0asmfixture')
+        desktop = self.source / 'node_modules/@earendil-works/pi-tui/native/linux/prebuilds/linux-x64/linux-platform-x11.node'
+        self.write(desktop, b'\x7fELFdesktop-only')
+        files, _, _ = prepare.portable_entries(self.source)
+        self.assertIn('node_modules/quickjs-wasi/extensions/url/url.so', files)
+        self.assertNotIn(desktop.relative_to(self.source).as_posix(), files)
+        self.assertTrue(desktop.exists(), 'Packaging must not rewrite the dependency checkout')
+        payload = self.build()
+        self.assertEqual(payload['excludedDependencyFiles'], [{
+            'path': desktop.relative_to(self.source).as_posix(), 'sha256': prepare.file_digest(desktop),
+            'reason': 'desktop-only-pi-tui-helper'}])
+
+    def test_npm_bin_metadata_cannot_escape_package_or_bin_directory(self):
+        manifest = self.source / 'node_modules/example/package.json'
+        for bins in ({'../escape': 'cli.js'}, {'tool': '../outside.js'}, {'tool': '/etc/passwd'}, {'tool': 'missing.js'}):
+            with self.subTest(bins=bins):
+                manifest.write_text(json.dumps({'name': 'example', 'bin': bins}), encoding='utf-8')
+                with self.assertRaises(ValueError):
+                    prepare.portable_entries(self.source)
+
+    def test_safe_links_allow_bin_relative_target_but_reject_traversal_and_cycles(self):
+        prepare.validate_links({'node_modules/example/cli.js'}, {'node_modules/.bin/example': '../example/cli.js'})
+        for links in ({'bin/x': '../../outside'}, {'bin/x': '/etc/passwd'}, {'bin/x': 'missing'},
+                      {'x': 'y', 'y': 'x'}, {'nested': 'real'}):
+            with self.subTest(links=links), self.assertRaises(ValueError):
+                prepare.validate_links({'real/file', 'nested/file'}, links)
+
+    def test_reject_unsafe_archive_names(self):
+        for name in ('../home/auth.json', '/data/data/other', 'x/../../escape', 'x\\escape', 'C:/file', '.', ''):
+            with self.subTest(name=name), self.assertRaises(ValueError):
                 prepare.safe_name(name)
 
-    def test_npm_does_not_pull_conflicting_node(self):
-        def p(name, depends=''):
-            return {'Package': name, 'Depends': depends, 'Version': '1', 'Architecture': 'aarch64', 'Filename': name, 'SHA256': '0' * 64}
-        index = {'npm': p('npm', 'nodejs | nodejs-lts'), 'nodejs': p('nodejs'), 'nodejs-lts': p('nodejs-lts')}
-        result = prepare.resolve(index, ['npm', 'nodejs-lts'])
-        self.assertEqual({x['Package'] for x in result}, {'npm', 'nodejs-lts'})
+    def test_old_embedded_payload_is_removed(self):
+        self.write(self.assets / 'runtime.zip', b'obsolete')
+        self.build()
+        self.assertFalse((self.assets / 'runtime.zip').exists())
 
-    def test_unknown_dependency_fails_closed(self):
-        with self.assertRaises(RuntimeError):
-            prepare.resolve({'nodejs-lts': {'Depends': 'missing'}}, ['nodejs-lts'])
-
-    def test_mirror_fallback_only_for_locked_official_termux_paths(self):
-        url = 'https://packages-cf.termux.dev/apt/termux-main/pool/main/n/node.deb'
-        self.assertEqual(prepare.download_urls(url, True), [url, url.replace('packages-cf.', 'packages.')])
-        self.assertEqual(prepare.download_urls(url, False), [url])
-        other = 'https://packages-cf.termux.dev.example.org/apt/termux-main/package.deb'
-        self.assertEqual(prepare.download_urls(other, True), [other])
-        with self.assertRaises(ValueError):
-            prepare.download_urls('http://packages.termux.dev/apt/termux-main/package.deb', True)
-
-    def test_download_fallback_verifies_bytes_and_renames_complete_file(self):
-        payload = b'locked Android package bytes'
-        url = 'https://packages-cf.termux.dev/apt/termux-main/pool/main/n/node.deb'
-        attempts = []
-        def fetch(candidate, output):
-            attempts.append(candidate)
-            if 'packages-cf.' in candidate:
-                output.write_bytes(b'incomplete response')
-                raise OSError('mirror unavailable')
-            output.write_bytes(payload)
-        with tempfile.TemporaryDirectory() as directory, patch.object(prepare, 'fetch_download', fetch), patch.object(prepare.time, 'sleep'):
-            target = Path(directory) / 'node.deb'
-            prepare.download(url, target, prepare.digest(payload))
-            self.assertEqual(target.read_bytes(), payload)
-            self.assertEqual(len(attempts), 3)
-            self.assertFalse(target.with_suffix('.deb.part').exists())
-
-    def test_checksum_failure_never_replaces_existing_cache(self):
-        with tempfile.TemporaryDirectory() as directory:
-            target = Path(directory) / 'node.deb'
-            target.write_bytes(b'previous cached bytes')
-            def fetch(url, output):
-                output.write_bytes(b'wrong bytes')
-            with patch.object(prepare, 'fetch_download', fetch):
-                with self.assertRaisesRegex(RuntimeError, 'Checksum mismatch'):
-                    prepare.download('https://example.org/node.deb', target, prepare.digest(b'expected bytes'))
-            self.assertEqual(target.read_bytes(), b'previous cached bytes')
-            self.assertFalse(target.with_suffix('.deb.part').exists())
-
-    def write_deb(self, path, members):
-        content = io.BytesIO()
-        with tarfile.open(fileobj=content, mode='w:xz') as archive:
-            for name, data, link in members:
-                item = tarfile.TarInfo(name)
-                item.mode = 0o755
-                if link is not None:
-                    item.type = tarfile.SYMTYPE
-                    item.linkname = link
-                    archive.addfile(item)
-                else:
-                    item.size = len(data)
-                    archive.addfile(item, io.BytesIO(data))
-        body = content.getvalue()
-        header = f'{"data.tar.xz/":<16}{0:<12}{0:<6}{0:<6}{100644:<8}{len(body):<10}`\n'.encode()
-        path.write_bytes(b'!<arch>\n' + header + body + (b'\n' if len(body) % 2 else b''))
-
-    def test_preinstall_proot_files_permissions_and_library_links(self):
-        with tempfile.TemporaryDirectory() as directory:
-            deb = Path(directory) / 'proot.deb'
-            self.write_deb(deb, [
-                ('./data/data/com.termux/files/usr/bin/proot', b'ELF-test', None),
-                ('./data/data/com.termux/files/usr/lib/libtalloc.so.2.5.0', b'library', None),
-                ('./data/data/com.termux/files/usr/lib/libtalloc.so.2', b'', 'libtalloc.so.2.5.0'),
-            ])
-            files, modes, links = {}, {}, {}
-            prepare.preinstall_proot_package(deb, files, modes, links)
-            self.assertEqual(files['bin/proot'], b'ELF-test')
-            self.assertEqual(modes['bin/proot'], 0o755)
-            self.assertEqual(links['lib/libtalloc.so.2'], 'libtalloc.so.2.5.0')
-
-    def test_preinstall_refuses_outside_prefix_and_escape_links(self):
-        invalid = [
-            ('../../outside', b'bad', None),
-            ('./etc/passwd', b'bad', None),
-            ('./data/data/com.termux/files/usr/bin/proot', b'', '../../../outside'),
-            ('./data/data/com.termux/files/usr/lib/bad', b'', '/etc/passwd'),
-            ('./data/data/com.termux/files/usr/var/lib/dpkg/status', b'bad', None),
-        ]
-        with tempfile.TemporaryDirectory() as directory:
-            deb = Path(directory) / 'bad.deb'
-            for member in invalid:
-                with self.subTest(member=member):
-                    self.write_deb(deb, [member])
-                    with self.assertRaises(ValueError):
-                        prepare.preinstall_proot_package(deb, {}, {}, {})
 
 if __name__ == '__main__':
     unittest.main()

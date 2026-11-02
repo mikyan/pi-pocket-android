@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "runtime": "termux",
+  "packageName": "com.termux",
+  "testedNodeMajor": 24,
+  "nodePolicy": "Keep an existing Node.js that satisfies payload.minimumNode and supports node:sqlite; install nodejs-lts only if Node.js is absent. An older Node.js requires the user to upgrade it explicitly.",
+  "nodePackageWhenMissing": "nodejs-lts",
+  "packages": ["npm", "git", "ripgrep", "fd", "curl", "tar", "coreutils", "util-linux"],
+  "requiredExistingCommands": ["bash", "pkg"]
+}

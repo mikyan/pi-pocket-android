@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect the verified ARM64 build and bind it to this run's selected input."""
+"""Collect the verified universal Termux-hosted APK and bind it to this run."""
 
 import hashlib
 import json
@@ -19,7 +19,7 @@ def digest(path):
 def collect(root, env):
     run_number = int(env["GITHUB_RUN_NUMBER"])
     version_code = 1000 + run_number
-    version_name = f"0.2.0-ci.{run_number}"
+    version_name = f"0.3.0-ci.{run_number}"
     if int(env["POCKET_VERSION_CODE"]) != version_code or env["POCKET_VERSION_NAME"] != version_name:
         raise ValueError("Built APK version differs from this workflow's version")
     if not re.fullmatch(r"[0-9a-f]{40}", env["GITHUB_SHA"]):
@@ -28,13 +28,13 @@ def collect(root, env):
     dist.mkdir(exist_ok=True)
     if list(dist.iterdir()):
         raise ValueError("Release staging directory must be empty")
-    apk_name = f"pi-pocket-android-{version_name}-arm64-debug.apk"
+    apk_name = f"pi-pocket-android-{version_name}-universal-debug.apk"
     shutil.copyfile(root / "app/build/outputs/apk/debug/app-debug.apk", dist / apk_name)
-    for source in ("app/src/main/assets/payload.json", "upstream.lock.json", "runtime.lock.json"):
+    for source in ("app/src/main/assets/payload.json", "upstream.lock.json", "termux-requirements.json"):
         shutil.copyfile(root / source, dist / Path(source).name)
     lock = json.loads((dist / "upstream.lock.json").read_text(encoding="utf-8"))
     build = {
-        "schemaVersion": 1, "baseSha": env["GITHUB_SHA"],
+        "schemaVersion": 1, "runtime": "termux", "baseSha": env["GITHUB_SHA"],
         "repository": env["GITHUB_REPOSITORY"], "runId": env["GITHUB_RUN_ID"],
         "runNumber": run_number, "runAttempt": int(env["GITHUB_RUN_ATTEMPT"]),
         "versionCode": version_code, "versionName": version_name,
@@ -48,9 +48,10 @@ def collect(root, env):
         f"Host commit: {build['baseSha']}\nWorkflow run: {run_url}\n"
         f"pi-pocket: {lock['version']} ({lock['commit']})\n"
         f"Android version: {version_name} / {version_code}\n"
-        "Device gate: same candidate passed Android API 35 x86_64 emulator Termux coexistence, rendered frontend, and force-stop/reopen checks.\n"
-        "ARM64 APK: built, linted, signed with the repository key, and signature verified.\n"
-        "ARM64 hardware and in-flight model-task recovery: not tested.\n",
+        "Requires an installed and configured official Termux; no embedded Linux runtime.\n"
+        "Device gate: same candidate passed installed-Termux startup, rendered frontend, and host-app force-stop/reopen checks.\n"
+        "Universal APK: built, linted, signed with the repository key, and signature verified.\n"
+        "Physical hardware and in-flight model-task recovery: not tested.\n",
         encoding="utf-8", newline="\n")
     files = sorted(path for path in dist.iterdir() if path.is_file())
     (dist / "SHA256SUMS.txt").write_text(

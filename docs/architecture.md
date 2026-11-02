@@ -1,93 +1,58 @@
-# 运行架构与升级边界
+# 运行架构
 
-本文对应 pi-pocket `0.21.0` / `7d6fbb0fc07adf18fa2d8e23514092176e5b65d2`。描述来自宿主实现和该固定上游源码；Android 设备行为仍需按验收清单验证。
-
-## 组件关系
+当前架构为依赖外部 Termux 的 0.3 系列。上游版本与提交以 `upstream.lock.json` 为准。
 
 ```mermaid
 flowchart TD
-    A[MainActivity] --> B[RuntimeService 前台服务]
-    B --> C[RuntimeInstaller 校验和安装]
-    C --> D[内置 bootstrap 与离线 deb]
-    B --> E[setup-runtime.sh]
-    E --> F[bootstrap second-stage]
-    F --> G[dpkg 安装并配置依赖]
-    B --> P[PRoot 私有路径映射]
-    P --> H[launch-pocket.sh + flock]
-    H --> I[原版 pi-pocket launcher]
-    I --> J[原版 server + pi durable]
-    J --> K[home 中的持久会话和工作文件]
-    A --> L[WebView]
-    L -->|本地认证访问| J
+    A[Android 界面] --> B[RUN_COMMAND 授权与连接检查]
+    B --> C[已安装的 Termux]
+    D[APK 内固定版本源码及 JS 依赖] --> E[带随机令牌的临时本地传输]
+    E --> C
+    C --> F[校验 SHA-256 并按版本安装]
+    F --> G[原版 pi-pocket launcher]
+    G --> H[原版 server 与 pi durable]
+    H --> I[Termux 中的持久数据与工作目录]
+    C -->|私有 PendingIntent 返回状态| A
+    A --> J[WebView]
+    J -->|127.0.0.1:18787 + 上游认证| H
 ```
 
-Android Java 代码只承担组件安装、进程启动、状态显示和 WebView 宿主职责。服务端、前端、任务模型与存储恢复逻辑来自固定版本的上游；Android 层不另写一个替代服务端。应用包名 `io.github.mikyan.pipocket` 与官方 Termux 独立，PRoot 将本应用的私有目录映射到内置二进制预期的虚拟前缀。
+## Android 与 Termux 的职责
 
-## 构建输入
+Android 应用不执行嵌入式 Linux 二进制，也不再展开 bootstrap 或使用 PRoot。它检测官方 Termux 命令服务、请求 `com.termux.permission.RUN_COMMAND`，发送明确的 bash 命令，并显示原版 Web 前端。实际 Node 进程和文件工具属于 Termux UID。
 
-`scripts/prepare.py` 从 `upstream.lock.json` 指定的提交提取干净源码，用上游 `package-lock.json` 安装生产依赖。它保留源码字节，只对宿主脚本、Android 文件权限和跨平台 npm 命令链接进行打包处理。Windows 生成的 `.cmd`/`.bin` 启动器不直接当作 Android 命令，包内命令链接根据 npm 包元数据重建。
+Termux 还要求 `~/.termux/termux.properties` 中的 `allow-external-apps=true`。宿主不能在尚未授权时直接读取 Termux 私有文件，也不会通过共享存储绕过命令权限。首次安装缺少的 Node、Git 等工具由 Termux 包管理器执行，不无条件重置已有 HOME 或升级整个 Termux 环境。
 
-`runtime.lock.json` 记录 Termux bootstrap 和完整 Android 包闭包的版本与 SHA-256。`npm` 是显式依赖，其 `nodejs | nodejs-lts` 选择 LTS，避免引入两个互斥 Node 包。正常构建复用锁文件，更新依赖是维护者的显式操作。payload 包含 bootstrap、离线 `.deb`、原版 pi-pocket 与生产依赖、宿主脚本、权限和符号链接清单。
+API 来自 [Termux RUN_COMMAND](https://github.com/termux/termux-app/wiki/RUN_COMMAND-Intent)。回调使用明确组件的 PendingIntent 和不导出的 receiver；返回的 owner token 存在宿主私有存储，不作为普通运行日志打印。宿主不提供网页到 shell 的 JavaScript bridge。
 
-## 首次启动
+## 构建与导入
 
-1. `MainActivity` 展示准备状态并启动 `RuntimeService`。Service 立即显示系统运行状态通知。
-2. 若已存在可用 owner token，先使用该 token 请求 `/api/me`。认证成功则连接原服务，避免另起一个任务进程。
-3. 没有可复用服务时，检查端口和旧进程锁；安装器验证 payload ABI 与设备 ABI 匹配、payload SHA-256。
-4. 文件先展开到 `usr.staging-<时间戳>`，应用清单权限，最后恢复符号链接。路径检查防止归档内容越过安装目录。
-5. 完整目录切换到本应用 `files/usr` 后，在 PRoot 的虚拟 `/data/data/com.termux/files/usr` 中执行 bootstrap second-stage。它配置预装包的维护脚本，包括 termux-exec 与 alternatives。PRoot 本体、loader 与两个动态库在配置前从已校验 deb 提取，外层进程使用真实私有路径寻找它们。
-6. 在设备上用 bootstrap 的 `dpkg` 安装并配置全部内置 `.deb`。因此包数据库、脚本、证书、链接和权限由实际包管理过程处理。
-7. 安装脚本审计 dpkg 状态，并验证 Node 内建 SQLite、子进程调用及 git/ripgrep/fd/npm，成功后写入本运行环境的 `configured` 标记。这些设备端自检代码尚待真机实际运行验证。
-8. `launch-pocket.sh` 使用 `flock` 持有 `home/.pi-pocket/android-host.lock`，启动原版 `bin/pi-pocket.js`。
+prepare 从锁定 Git 提交提取原样源码，用原始 `package-lock.json` 安装生产 JavaScript 依赖。`--omit=dev --omit=optional --ignore-scripts` 避免构建机平台的可选原生二进制和安装脚本进入设备。POSIX 命令链接按包元数据重建，许可证文本保留。
 
-配置失败不会写成功标记。宿主先持有 setup 排他锁，再执行配置；bootstrap 自己的 second-stage 锁在运行开始时创建，单凭锁存在不能证明配置完成。因此，缺少宿主的 `bootstrap-configured` 成功标记时，会在排他锁内移除旧 second-stage 锁并重试，只有维护脚本成功后才保存成功状态。
+APK 含 `pocket.tar.gz`、`payload.json` 和宿主安装/启动脚本。payload schema 2 指明 `runtime=termux`、上游版本、提交、最低 Node、归档 SHA-256 和运行版本标识。构建审计检查路径和链接边界、核心源码一致性、哈希；Termux 导入再次核对哈希。
 
-## 后端启动与认证
+首次传输使用只绑定回环地址的短期 HTTP 服务，随机端口与高熵路径令牌只通过授权命令传给 Termux。该服务仅提供本次固定资产，不允许任意文件读取；完成或超时即关闭。它不向局域网公开安装包和凭据。
 
-launcher 使用以下公开配置：本地访问、监听 `127.0.0.1:18787`、数据目录 `home/.pi-pocket`、默认工作目录 `home/workspace`，并跳过交互确认。宿主设置稳定的 HOME、PREFIX、PATH、TMPDIR 和环境变量；`PI_POCKET_GUARD=off` 是当前 Android 兼容设置。虚拟路径中的数据实际落在本应用私有目录；已有 Termux 的目录不作为绑定源。外层 PRoot 不使用 Termux 的 LD_PRELOAD，以避免干扰路径翻译。
+## 数据与进程
 
-上游需要 Node 22.19+ 的原生 TypeScript 支持、`node:sqlite` 和 `child_process`。它的 launcher 用子进程管理 server，因此仅有能执行部分 JavaScript 的引擎不够。
+宿主专用根目录是 Termux 的 `~/.local/share/pi-pocket-android/`。`versions/` 保存按版本区分的代码，`data/` 保存上游持久状态，`workspace/` 为默认工作目录，`logs/` 保存运行输出。保留 Termux 原始 HOME，因此 Pi 的 `~/.pi/agent/` 与同环境内的 Pi 工具共用。
 
-上游没有专用 `/health` 接口；初始化期间 HTTP 可以返回 503。宿主通过私有 `config.json` 的 owner token 请求 `/api/me`，收到 200 才视为当前实例就绪。单纯端口打开或任意网页返回 200 不能代替该检查。
+监听地址固定 `127.0.0.1:18787`，启动参数使用上游公开的 local access、data、cwd 选项，并设置 `PI_POCKET_GUARD=off`。Node 必须满足上游最低版本并能够加载 `node:sqlite`。宿主只有在 owner token 请求 `/api/me` 成功后才打开 `/login?token=...`，由上游建立 Cookie。
 
-WebView 进入 `/login?token=...`，让上游设置自身登录 Cookie，再跳回主页。token 不交给外部浏览器；宿主日志遮盖已识别的 token 参数。WebView 禁止 file/content 访问、第三方 Cookie 和通用文件源访问，不向网页暴露 shell JavaScript bridge。非本地的主框架链接交给系统浏览器；文件上传通过 Android 文件选择器提供。该策略仍需真机验证 WebView 重定向、Cookie 与生命周期行为。
+重复启动用专用目录内的锁序列化。关闭或强行停止 Android 壳应用不主动停止 Termux 后端；再次进入时验证认证接口并重连。Termux 被停止后则重新启动原版 launcher，沿用同一数据目录。宿主不向上游伪造任务恢复事件，也不重放用户消息。
 
-## 进程与 durable 恢复
+## 版本切换
 
-原版 launcher 负责上游内部重启协议和异常退出重试。Android Service 负责重新进入应用时发现或启动 launcher。Activity 重建、返回前台、WebView 重建均不清空 HOME 或数据库。`flock` 防止多个宿主启动同一数据目录；上游自身的运行锁仍保持原行为。
+运行中的旧服务优先重连，安装新版 APK 不自动中断任务。用户在菜单明确选择重启后，只停止本宿主跟踪并核实的 pi-pocket 进程，再启动 APK 中的版本。其他 Termux 会话不属于停止目标。
 
-恢复流程为：打开同一个 `pocket.sqlite`，由上游恢复会话、run、subagents 和归属，再调用 durable harness 的恢复入口。宿主不会通过重新发消息或构造新会话替代这一流程。
+代码安装与持久数据分离，升级不删除 workspace、Pi 配置或上游数据库。旧内置模式的宿主私有数据保持原位，不自动导入到 Termux。上游数据库迁移可能不可逆，本项目不自动将新数据库交给旧版本尝试回滚。
 
-持久化不等于保存整个进程。进行中的网络连接、浏览器实例和本机进程内存可以丢失。可安全重放步骤由上游处理；不安全的工具调用可能成为 `interrupted`。例如外部副作用已经发生但结果尚未提交时，不能笼统承诺恰好执行一次。验证必须检查任务进度和工具结果，不能只检查聊天历史还在。
+运行版本标识绑定归档与宿主脚本，避免同一上游版本的宿主修复被错误当作无需更新。切换版本前，在持有 server 锁且旧服务停止时，将专用 `data/` 归档到 `backups/`，排除锁和临时连接标记；失败则不启动新版本。工作目录及共享 Pi 配置不在该归档中，备份也不会自动还原。
 
-前台 Service 和 `START_STICKY` 不保证无限后台运行，也不改变 Android 的用户强行停止语义。正常使用目标是：任务状态尽量持续保存，进程消失后手动重开能从上游持久状态恢复。
+## 权限与适配边界
 
-单独杀死 PRoot 与强行停止整个应用不同：tracee 可能脱离路径翻译后残留。当前自动化覆盖整应用强停与重开，尚未覆盖这种单进程故障；异常残留应通过完整停止本应用恢复，不把接口仍返回 200 当作所有工具仍可用的证明。
+Termux 的整个 HOME 及其已获授权的共享存储对工具可见，workspace 只是默认 cwd。独立 Android UID 的其他应用私有文件仍不可访问。WebView 禁止 file/content 文件源访问和第三方 Cookie；外部主框架链接交给系统浏览器，上传走系统文件选择器。
 
-## 目录与升级事务
+Android、Termux 与厂商电池管理都可能终止进程。持久化状态恢复不等于进程内存恢复，也不保证任意网络或 shell 副作用恰好一次。真正在执行的模型任务恢复需独立验收。
 
-| 路径（相对应用 `files/`） | 内容 | 升级处理 |
-| --- | --- | --- |
-| `usr/` | 可替换的运行环境、工具、上游代码 | 校验新 payload 后切换 |
-| `home/.pi-pocket/` | 数据库、任务、配置与应用数据 | 保留，并在切换前备份 |
-| `home/.pi/agent/` | 提供商授权等 Pi 配置 | 保留，并在切换前备份 |
-| `home/workspace/` | 用户项目与文件 | 保留；不纳入自动配置备份 |
-| `backups/<时间戳>/` | 升级前的 pi-pocket/pi-agent 快照与记录 | 保留；不自动恢复 |
-| `usr.previous-<时间戳>/` | 切换前运行环境 | 保留；不自动搭配新数据库启动 |
-| `.pocket-runtime-switch.json` | 目录切换日志 | 用于处理中断的目录切换 |
-
-升级前必须没有进程持有运行环境锁。若当前旧服务仍健康，宿主会先连接它并提示完整停止后再安装组件，避免任务执行时更换运行文件。切换前复制两份配置/数据目录；目录重命名中断时，安装器可恢复之前保留的运行环境目录。
-
-目录恢复与数据库降级是不同操作。新上游可能进行单向 schema 迁移；仅恢复 `usr.previous-*` 不能撤销迁移。本项目不自动还原旧数据库。需要回退时，应在确认影响后同时选择匹配的运行环境与迁移前数据备份，并保留失败现场。
-
-维护上游升级时，更新 `upstream.lock.json` 到经过验证的新提交和版本，重新执行 prepare、契约测试、APK 构建与设备升级测试。更新 Android 运行包时才显式更新 `runtime.lock.json`。修改的是宿主输入锁和构建产物，上游源码保持独立。
-
-## 已知适配边界
-
-- 应用使用独立包名与 UID；官方二进制的固定前缀通过 PRoot 进程内映射兼容。两个应用能够同装，实际子进程执行仍需模拟器及 ARM64 设备验证。
-- `targetSdk=28` 是侧载兼容路线。Android 对现代 targetSDK 限制执行可写目录的二进制；长期需要 APK 原生库目录分发或其他重新设计，不能只提高 Gradle 数字。
-- Guard 关闭，生产安装省略 optional 包与 npm 生命周期脚本。依赖这些能力的上游功能不在已验证范围。
-- 语音、网页推送通知、Android 分享接收、下载和浏览器自动化尚未适配。文件选择器已有实现，但仍需要真机验收。
-- 当前没有 ARM64 真机通过记录；CI x86_64 模拟器的启动和同装记录应单独引用，不等于所有手机或全部桌面功能已经验证。
-
-参考：[Android 可执行文件限制](https://developer.android.com/about/versions/10/behavior-changes-10#execute-permission)、[Termux 固定前缀与 fork](https://github.com/termux/termux-app#forking)、[Termux APKLF 方向](https://termux.dev/en/posts/general/2024/11/11/termux-selected-for-nlnet-ngi-mobifree-grant.html)、[Android 进程生命周期](https://developer.android.com/guide/components/activities/process-lifecycle)。
+目前保留 minSdk 26、targetSdk 28 以控制侧载兼容变化。语音、网页推送、下载、分享接收和浏览器自动化不列为已完成适配；Guard 和可选原生依赖功能不在验证范围内。

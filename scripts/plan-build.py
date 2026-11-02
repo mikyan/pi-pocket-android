@@ -18,14 +18,17 @@ spec.loader.exec_module(upstream)
 RELEASE_MARKER = re.compile(r"<!-- pi-pocket-android (\{[^\r\n]*\}) -->")
 
 
-def validate_runtime(candidate, runtime):
-    versions = [package["Version"] for package in runtime["packages"]
-                if package.get("Package") == "nodejs-lts"]
-    if len(versions) != 1:
-        raise ValueError("Runtime must contain exactly one pinned nodejs-lts package")
-    match = re.fullmatch(r"(\d+\.\d+\.\d+)(?:-\d+)?", versions[0])
-    if not match or upstream.version_tuple(match[1]) < upstream.version_tuple(candidate["minimumNode"]):
-        raise ValueError("Upstream requires a newer Node.js runtime; update and test the Android runtime locks first")
+def validate_runtime(candidate, requirements):
+    if (requirements.get('schemaVersion') != 1 or requirements.get('runtime') != 'termux'
+            or requirements.get('packageName') != 'com.termux'):
+        raise ValueError('Invalid installed-Termux requirements')
+    tested_major = requirements.get('testedNodeMajor')
+    if type(tested_major) is not int or tested_major != 24:
+        raise ValueError('The CI workflow currently tests Node.js 24')
+    if upstream.version_tuple(candidate['minimumNode'])[0] > tested_major:
+        raise ValueError('Upstream requires a newer Node.js major; update CI compatibility coverage first')
+    # prepare.py checks the exact build Node version; the phone verifies its
+    # installed Node against minimumNode and checks node:sqlite before startup.
 
 
 def already_published(releases, candidate, lock_sha256):
@@ -40,6 +43,7 @@ def already_published(releases, candidate, lock_sha256):
             except ValueError:
                 continue
             if (isinstance(record, dict) and record.get("schemaVersion") == 1
+                    and record.get("runtime") == "termux"
                     and record.get("upstreamCommit") == candidate["commit"]
                     and record.get("upstreamLockSha256") == lock_sha256):
                 return True
@@ -75,8 +79,7 @@ def main():
         changed = checked["changed"] == "true"
     else:
         candidate, changed = current, False
-    for name in ("runtime.lock.json", "runtime-x86_64.lock.json"):
-        validate_runtime(candidate, json.loads((ROOT / name).read_text(encoding="utf-8")))
+    validate_runtime(candidate, json.loads((ROOT / 'termux-requirements.json').read_text(encoding='utf-8')))
     candidate_path.parent.mkdir(parents=True, exist_ok=True)
     if changed:
         upstream.write_candidate(candidate_path, candidate)
@@ -100,7 +103,7 @@ def main():
             handle.write(f"Selected pi-pocket **{candidate['version']}** (`{candidate['commit']}`).\n\n")
             handle.write("No upstream update; a matching Release already exists. Build skipped.\n"
                          if result["build"] == "false" else
-                         "The selected lock is shared by the device gate and ARM64 build. Publication follows successful checks.\n")
+                         "The selected lock is shared by the installed-Termux device gate and universal APK build. Publication follows successful checks.\n")
     print(json.dumps(result, indent=2))
 
 
