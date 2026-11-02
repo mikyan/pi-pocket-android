@@ -42,15 +42,22 @@ python scripts/prepare.py --source D:/Code/pi-pocket --update-runtime-lock
 
 准备阶段会生成 `app/src/main/assets/runtime.zip` 和 `payload.json`；Gradle 在打包前核对 payload SHA-256，缺少内置运行环境时会拒绝构建。调试 APK 默认输出到 `app/build/outputs/apk/debug/app-debug.apk`。这是调试签名产物；后续升级安装必须保持签名一致并增加版本号。
 
-## GitHub Actions 构建
+## GitHub Actions 构建与自动升级
 
-[Build Android APK](https://github.com/mikyan/pi-pocket-android/actions/workflows/build-android.yml) 会在推送到 `main`、面向 `main` 的 Pull Request，以及手动触发时运行。手动构建：打开 Actions → Build Android APK → Run workflow，选择 `main`。工作流使用 Ubuntu 24.04、Python 3.12、Node.js 24、JDK 17 和 Android SDK 36，直接按锁文件拉取 pi-pocket 并打包，不需要本地的 `D:/Code/pi-pocket`。
+[Build Android APK](https://github.com/mikyan/pi-pocket-android/actions/workflows/build-android.yml) 会在推送到 `main`、面向 `main` 的 Pull Request、手动触发，以及每周一香港时间 **09:17**（UTC 01:17）运行。每周检查上游正式 Release，跳过草稿和预发布版本，为新版本生成候选 `upstream.lock.json`。同一次运行的模拟器与 ARM64 构建使用同一份候选锁，并分别验证其 SHA-256。工作流使用 Ubuntu 24.04、Python 3.12、Node.js 24、JDK 17 和 Android SDK 36，不需要本地的 `D:/Code/pi-pocket`。
 
-工作流先构建一次仅用于测试的 x86_64 APK，在 Android API 35 模拟器内安装官方 Termux，再安装独立包名的 Pi Pocket。设备检查包含两包同时存在、内置运行环境配置、认证接口与原版前端 HTML、强行停止后重开并保留同一 owner，以及官方 Termux 私有测试文件未被更改。测试不发送模型请求，不等同于 ARM64 真机或运行中 Agent 任务恢复验收。模拟器检查失败时，后续 ARM64 APK 构建与发布会被阻止。
+手动运行时，打开 Actions → Build Android APK → Run workflow，选择 `main`，可设置：
 
-设备检查通过后，再构建 ARM64 包并运行打包单元测试、离线负载和上游源码一致性检查、原版 launcher 的启动/登录/重启测试、APK 编译、Android lint 和 APK 签名校验。工作流不会更新上游或 Android 依赖锁。
+- `check_upstream`：默认开启，检查上游正式 Release；关闭时按仓库现有锁构建。
+- `publish_release`：默认开启，所有检查通过后发布 GitHub Release；关闭时只生成 CI 工件，不推进仓库中的上游锁或发布 Release。
 
-`main` 成功构建后，运行页面的 **Artifacts** 中会出现 `pi-pocket-android-arm64-debug-<运行编号>`，内含 APK、`SHA256SUMS.txt`、上游与运行环境锁、payload 元数据和构建记录。APK 工件保留 30 天，lint 和设备检查报告保留 14 天。仓库公开可读；GitHub Actions 工件下载仍需要登录 GitHub。Pull Request 和非 `main` 分支的手动构建只做检查，不发布 APK；x86_64 测试 APK 也不会发布。
+普通推送和 Pull Request 按仓库现有锁测试。每周检查若版本没有变化且已有匹配的正式 Release，就跳过模拟器和 APK 构建；如果缺少匹配 Release，会重新构建并补全发布。定时运行可能排队延迟；公开仓库连续 60 天没有活动时，GitHub 可能自动停用定时工作流，需要在 Actions 中重新启用。见 [GitHub 定时工作流说明](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)。
+
+工作流先构建一次仅用于测试的 x86_64 APK，在 Android API 35 模拟器内安装官方 Termux，再安装独立包名的 Pi Pocket。设备检查包含两包同时存在、内置运行环境配置、认证接口与原版前端 HTML、WebView 实际渲染可操作控件、强行停止后重开并保留同一 owner，以及官方 Termux 私有测试文件未被更改。测试不发送模型请求，不等同于 ARM64 真机或运行中 Agent 任务恢复验收。模拟器检查失败时，后续 ARM64 APK 构建与发布会被阻止。
+
+设备检查通过后，再构建 ARM64 包并运行打包单元测试、离线负载和上游源码一致性检查、原版 launcher 的启动/登录/重启测试、APK 编译、Android lint 和 APK 签名校验。只有这些步骤全部通过，发布任务才有写入权限，核对产物后推进上游锁，并将上传完整的草稿 Release 转为正式 [GitHub Release](https://github.com/mikyan/pi-pocket-android/releases)。测试或构建失败会保留旧锁和旧版 Release；发布中断留下的草稿不会作为正式版本提供下载，后续运行可以补全发布。Android 运行环境锁不会随上游升级自动更新，若新版本要求超出现有运行环境的 Node.js 版本，检查会失败，需要单独升级并验证运行环境。
+
+`main` 成功构建后，运行页面的 **Artifacts** 中会出现 `pi-pocket-android-arm64-debug-<run_id>-<run_attempt>`，内含 APK、`SHA256SUMS.txt`、上游与运行环境锁、payload 元数据和构建记录。发布成功后也可直接从公开的 Releases 页面下载 APK 和校验材料。APK 工件保留 30 天，lint 和设备检查报告保留 14 天。GitHub Actions 工件下载需要登录 GitHub；正式 Release 下载不依赖工件保留期。Pull Request 和非 `main` 分支的手动构建只做检查，不发布 APK；x86_64 测试 APK 也不会发布。
 
 仓库使用独立、稳定的 CI 调试签名，GitHub repository secrets 为 `ANDROID_DEBUG_KEYSTORE_BASE64` 和 `ANDROID_DEBUG_KEYSTORE_PASSWORD`，alias 为 `pocket-debug`。主分支构建缺少签名 secrets 时会失败，不会悄悄发布随机签名的包。密钥不进入 Git、构建缓存或下载工件，PR 和模拟器检查也不使用它。CI 版本号为 `0.2.0-ci.<运行编号>`，versionCode 为 `1000 + 运行编号`，后续应保持同一密钥以支持覆盖升级。
 
@@ -62,8 +69,8 @@ Actions 自身按完整提交 SHA 固定版本；仅缓存校验过的 runtime �
 
 | 输入 | 当前约束 |
 | --- | --- |
-| pi-pocket | `0.21.0`，提交 `7d6fbb0fc07adf18fa2d8e23514092176e5b65d2` |
-| 上游来源 | `upstream.lock.json` |
+| pi-pocket | 当前版本与提交以 [upstream.lock.json](upstream.lock.json) 的 `version`、`commit` 为准 |
+| 上游来源 | [upstream.lock.json](upstream.lock.json) 中的 `repository` |
 | Android 包 | `runtime.lock.json` 固定版本、下载路径和每个文件的 SHA-256 |
 | npm 依赖 | 上游原始 `package-lock.json`，干净目录执行 `npm ci` |
 | 最终 payload | `payload.json` 中的 SHA-256，构建与设备安装分别校验 |
@@ -82,11 +89,11 @@ Actions 自身按完整提交 SHA 固定版本；仅缓存校验过的 runtime �
 
 APK 升级替换 `usr` 运行环境，保留上述 `home` 数据。切换前会备份 `.pi-pocket` 与 `.pi/agent` 到应用私有 `files/backups/<时间戳>/`，并保留旧运行环境 `usr.previous-<时间戳>`。`workspace` 被保留，但不包含在这份自动备份中。备份同样在应用私有存储，卸载或清除应用数据会一并删除；它不等同于设备外备份。
 
-上游 `0.21.0` 的存储迁移有方向性。保留旧运行环境不代表可以直接用旧版本打开新数据库，本项目不会自动回滚数据库。升级和失败恢复步骤见 [真机验证清单](docs/device-validation.md)。
+上游升级可能进行单向存储迁移。保留旧运行环境不代表可以直接用旧版本打开新数据库，本项目不会自动回滚数据库。升级和失败恢复步骤见 [真机验证清单](docs/device-validation.md)。
 
 ## 验证与排查
 
-每次 CI 检查打包边界、原版上游启动/登录/重启接口、源文件逐字节一致性、离线包 SHA-256、APK 签名和 Android lint。随后在 x86_64 模拟器中安装官方 Termux 与本应用，验证共存、服务启动和强行停止后重开；只有设备测试成功才发布 ARM64 APK 工件。具体结果以对应 Actions 运行记录为准。
+每次实际构建都会检查打包边界、原版上游启动/登录/重启接口、源文件逐字节一致性、离线包 SHA-256、APK 签名和 Android lint。x86_64 模拟器先安装官方 Termux 与本应用，验证共存、服务启动、前端实际渲染和强行停止后重开；只有设备测试成功才构建并发布 ARM64 APK 工件。具体结果以对应 Actions 运行记录为准。
 
 尚未验证 ARM64 真机启动，也未实测手机上 durable 模型任务在中断后的续跑。模拟器测试不会调用付费模型。
 

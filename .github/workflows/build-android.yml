@@ -5,17 +5,72 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    - cron: '17 1 * * 1'
   workflow_dispatch:
+    inputs:
+      check_upstream:
+        description: Check for a newer stable pi-pocket release
+        type: boolean
+        default: true
+      publish_release:
+        description: Publish the tested APK as a GitHub Release (main only)
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
 concurrency:
   group: android-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+      publish: ${{ steps.plan.outputs.publish }}
+      changed: ${{ steps.plan.outputs.changed }}
+      version: ${{ steps.plan.outputs.version }}
+      commit: ${{ steps.plan.outputs.commit }}
+      lock_sha256: ${{ steps.plan.outputs.lock_sha256 }}
+      artifact_id: ${{ steps.candidate.outputs.artifact-id }}
+    steps:
+      - name: Check out the exact host revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Select an immutable upstream candidate
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHECK_UPSTREAM: ${{ inputs.check_upstream }}
+          PUBLISH_RELEASE: ${{ inputs.publish_release }}
+        run: python scripts/plan-build.py
+
+      - name: Upload the selected upstream lock
+        if: steps.plan.outputs.build == 'true'
+        id: candidate
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: upstream-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .cache/upstream-plan/upstream.lock.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
   device-test:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -28,12 +83,39 @@ jobs:
       - name: Check out host project
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
+
+      - name: Download this run's selected upstream lock
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.plan.outputs.artifact_id }}
+          path: .cache/upstream-plan
+          merge-multiple: true
+
+      - name: Verify and apply the selected upstream lock
+        env:
+          EXPECTED_LOCK_SHA256: ${{ needs.plan.outputs.lock_sha256 }}
+        run: |
+          python - <<'PY'
+          import hashlib
+          import os
+          import re
+          import shutil
+          from pathlib import Path
+          candidate = Path('.cache/upstream-plan/upstream.lock.json')
+          expected = os.environ['EXPECTED_LOCK_SHA256']
+          if not re.fullmatch(r'[0-9a-f]{64}', expected):
+              raise SystemExit('Invalid upstream lock digest')
+          if hashlib.sha256(candidate.read_bytes()).hexdigest() != expected:
+              raise SystemExit('Selected upstream lock failed SHA-256 verification')
+          shutil.copyfile(candidate, 'upstream.lock.json')
+          PY
 
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -107,9 +189,12 @@ jobs:
           retention-days: 14
 
   build:
-    needs: device-test
+    needs: [plan, device-test]
+    if: needs.plan.outputs.build == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    outputs:
+      artifact_id: ${{ steps.apk.outputs.artifact-id }}
     env:
       BUILD_TOOLS_VERSION: '35.0.0'
       PYTHONUNBUFFERED: '1'
@@ -120,12 +205,39 @@ jobs:
       - name: Check out host project
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
+
+      - name: Download this run's selected upstream lock
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.plan.outputs.artifact_id }}
+          path: .cache/upstream-plan
+          merge-multiple: true
+
+      - name: Verify and apply the selected upstream lock
+        env:
+          EXPECTED_LOCK_SHA256: ${{ needs.plan.outputs.lock_sha256 }}
+        run: |
+          python - <<'PY'
+          import hashlib
+          import os
+          import re
+          import shutil
+          from pathlib import Path
+          candidate = Path('.cache/upstream-plan/upstream.lock.json')
+          expected = os.environ['EXPECTED_LOCK_SHA256']
+          if not re.fullmatch(r'[0-9a-f]{64}', expected):
+              raise SystemExit('Invalid upstream lock digest')
+          if hashlib.sha256(candidate.read_bytes()).hexdigest() != expected:
+              raise SystemExit('Selected upstream lock failed SHA-256 verification')
+          shutil.copyfile(candidate, 'upstream.lock.json')
+          PY
 
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -218,22 +330,14 @@ jobs:
 
       - name: Collect downloadable APK and build metadata
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-        run: |
-          mkdir -p dist
-          apk="pi-pocket-android-${POCKET_VERSION_NAME}-arm64-debug.apk"
-          cp app/build/outputs/apk/debug/app-debug.apk "dist/$apk"
-          cp app/src/main/assets/payload.json upstream.lock.json runtime.lock.json dist/
-          (cd dist && sha256sum "$apk" > SHA256SUMS.txt)
-          printf 'Host commit: %s\nWorkflow run: %s/%s/actions/runs/%s\nDevice gate: Android API 35 x86_64 emulator coexistence/startup/restart passed\nARM64 hardware and in-flight model-task recovery: not tested\n' \
-            "$GITHUB_SHA" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" > dist/BUILD.txt
-          printf 'APK: `%s`\n\nVersion code: `%s`\n\nAndroid API 35 x86_64 emulator gate passed. ARM64 hardware and in-flight model-task recovery remain separate tests.\n' \
-            "$apk" "$POCKET_VERSION_CODE" >> "$GITHUB_STEP_SUMMARY"
+        run: python scripts/collect-release.py
 
       - name: Upload APK and integrity metadata
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        id: apk
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: pi-pocket-android-arm64-debug-${{ github.run_number }}
+          name: pi-pocket-android-arm64-debug-${{ github.run_id }}-${{ github.run_attempt }}
           path: dist/
           compression-level: 0
           if-no-files-found: error
@@ -251,3 +355,35 @@ jobs:
       - name: Remove temporary signing key
         if: always()
         run: rm -f -- "$RUNNER_TEMP/pocket-debug.jks"
+
+  release:
+    needs: [plan, build]
+    if: needs.plan.outputs.publish == 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the tested host revision for publication
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: true
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Download this run's verified ARM64 package
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          path: dist
+          merge-multiple: true
+
+      - name: Publish the tested upstream lock and GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_UPSTREAM_LOCK_SHA256: ${{ needs.plan.outputs.lock_sha256 }}
+        run: python scripts/publish-release.py --dist dist
