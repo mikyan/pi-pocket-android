@@ -1,0 +1,42 @@
+scripts/publish-release.py
+  s_9596269565dfac::t_196b48a6ed4d7b 111,119,124
+scripts/verify-payload.py
+  s_9596269565dfac::t_196b48a6ed4d7b 17
+app/build.gradle
+  s_9596269565dfac::t_683387f0cf0949 40,46,50,69,80-110
+  s_9596269565dfac::t_bd48c96348911f 111-113
+scripts/prepare.py
+  s_9596269565dfac::t_196b48a6ed4d7b 226-229,264
+tests/test_prepare.py
+  s_9596269565dfac::t_196b48a6ed4d7b 66,106,155,158
+tests/test_publish_release.py
+  s_9596269565dfac::t_196b48a6ed4d7b 105,113,173,206,220
+scripts/device-smoke.py
+  s_9596269565dfac::t_c4670a34ea7e0e 394
+.gitignore
+  s_9596269565dfac::t_6dbd328ee29880 6
+README.md
+  s_9596269565dfac::t_1cf7ed94e616b9 53
+app/src/main/java/app/pipocket/android/AssetTransfer.java
+  s_9596269565dfac::t_def9b7d6d2a271 39,44,90
+app/src/main/java/app/pipocket/android/TermuxPayload.java
+  s_9596269565dfac::t_6581cb0921cc69 18
+docs/architecture.md
+  s_9596269565dfac::t_087caeabf81f2c 32
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "development:1.7.3",
+  "base_commit_sha": "2c8b71a6175d3608fe6c6b462a942bb92f0fe2da",
+  "prompts": {},
+  "sessions": {
+    "s_9596269565dfac": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a19c67-b563-7e60-a982-d95a172ea6cf",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "AI_BA <ai_ball@outlook.com>"
+    }
+  }
+}
