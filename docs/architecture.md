@@ -25,6 +25,8 @@ Termux 还要求 `~/.termux/termux.properties` 中的 `allow-external-apps=true`
 
 API 来自 [Termux RUN_COMMAND](https://github.com/termux/termux-app/wiki/RUN_COMMAND-Intent)。回调使用明确组件的 PendingIntent 和不导出的 receiver；返回的 owner token 存在宿主私有存储，不作为普通运行日志打印。宿主不提供网页到 shell 的 JavaScript bridge。
 
+命令通过 `startForegroundService()` 交给 Termux 的 `RunCommandService`。官方 Termux 会立即进入前台服务，因此 Termux 进程已停止时也能从应用入口重新启动；无需先跳转到 Termux 界面。命令本身仍使用 background 执行模式，不创建交互终端窗口。
+
 ## 构建与导入
 
 prepare 从锁定 Git 提交提取原样源码，用原始 `package-lock.json` 安装生产 JavaScript 依赖。`--omit=dev --omit=optional --ignore-scripts` 避免构建机平台的可选原生二进制和安装脚本进入设备。POSIX 命令链接按包元数据重建，许可证文本保留。
