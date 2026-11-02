@@ -1,0 +1,71 @@
+app/src/main/java/app/pipocket/android/RuntimeService.java
+  s_9596269565dfac::t_6c42a9ddfd4f64 1-255
+scripts/verify-payload.py
+  s_9596269565dfac::t_dfa74ccfcf0f60 1-50
+settings.gradle
+  s_9596269565dfac::t_8e7f4dc102ea5e 1-9
+docs/architecture.md
+  s_9596269565dfac::t_a89609703015d8 1-90
+gradle.properties
+  s_9596269565dfac::t_826ea89bef2b5a 1-2
+scripts/launch-pocket.sh
+  s_9596269565dfac::t_ba8f29f6ddb8db 1-7
+gradlew.bat
+  s_9596269565dfac::t_e3afdacf91ef10 1-93
+runtime.lock.json
+  s_9596269565dfac::t_63ae4b19df22c0 1-444
+tests/upstream.integration.test.mjs
+  s_9596269565dfac::t_f72f6190ad68af 1-13
+upstream.lock.json
+  s_9596269565dfac::t_3f1b9c092b6e7c 1-7
+app/src/main/AndroidManifest.xml
+  s_9596269565dfac::t_fcc6ab5864ec23 1-26
+app/src/main/res/xml/network_security_config.xml
+  s_9596269565dfac::t_3b6955706ed8b8 1-7
+gradlew
+  s_9596269565dfac::t_053dd459d0db58 1-248
+scripts/smoke-upstream.mjs
+  s_9596269565dfac::t_f5120e4ba97984 1-253
+docs/device-validation.md
+  s_9596269565dfac::t_126508d824c5f9 1-103
+docs/build-verification.md
+  s_9596269565dfac::t_41a40929800cf6 1-22
+app/src/main/java/app/pipocket/android/RuntimeInstaller.java
+  s_9596269565dfac::t_cca5bd9e040ea8 1-241
+app/src/main/java/app/pipocket/android/MainActivity.java
+  s_9596269565dfac::t_faa751d0b32ffe 1-257
+README.md
+  s_9596269565dfac::t_06cef0e0eb76d5 1-84
+scripts/prepare.py
+  s_9596269565dfac::t_52c6150c3fbc76 1-248
+app/build.gradle
+  s_9596269565dfac::t_f07c86844326bc 1-39
+.gitignore
+  s_9596269565dfac::t_fb986ccb0f5518 1-10
+tests/test_prepare.py
+  s_9596269565dfac::t_7db4714583ee9b 1-27
+scripts/download.ps1
+  s_9596269565dfac::t_1dd8f86f4a39c2 1-4
+build.gradle
+  s_9596269565dfac::t_eb97b1dbe27c9d 1-3
+scripts/setup-runtime.sh
+  s_9596269565dfac::t_a417cc997e4b11 1-19
+gradle/wrapper/gradle-wrapper.properties
+  s_9596269565dfac::t_070b8d6e83fdcc 1-7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "development:1.7.3",
+  "base_commit_sha": "49c94b2ca9442a1a07098f5cafde715dded96368",
+  "prompts": {},
+  "sessions": {
+    "s_9596269565dfac": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a19c67-b563-7e60-a982-d95a172ea6cf",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "AI_BA <ai_ball@outlook.com>"
+    }
+  }
+}
