@@ -1,0 +1,10 @@
+.cache/
+.gradle/
+build/
+app/build/
+app/src/main/assets/runtime.zip
+app/src/main/assets/payload.json
+local.properties
+*.jks
+*.keystore
+__pycache__/

@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "repository": "https://github.com/TannerMidd/pi-pocket.git",
+  "commit": "7d6fbb0fc07adf18fa2d8e23514092176e5b65d2",
+  "version": "0.21.0",
+  "minimumNode": "22.19.0"
+}

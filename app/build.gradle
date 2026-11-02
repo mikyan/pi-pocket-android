@@ -1,0 +1,39 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'app.pipocket.android'
+    compileSdk 36
+    defaultConfig {
+        // Official Termux packages encode this prefix. Changing only this ID breaks the runtime.
+        applicationId 'com.termux'
+        minSdk 26
+        targetSdk 28
+        versionCode 1
+        versionName '0.1.0'
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    androidResources { noCompress += ['zip'] }
+}
+
+tasks.register('verifyPayload') {
+    doLast {
+        def assets = file('src/main/assets')
+        if (!new File(assets, 'runtime.zip').isFile() || !new File(assets, 'payload.json').isFile()) {
+            throw new GradleException('Run python scripts/prepare.py --source <pi-pocket checkout> first. An empty shell APK is not a complete build.')
+        }
+        def manifest = new groovy.json.JsonSlurper().parse(new File(assets, 'payload.json'))
+        def digest = java.security.MessageDigest.getInstance('SHA-256')
+        new File(assets, 'runtime.zip').withInputStream { input ->
+            byte[] buffer = new byte[65536]
+            int n
+            while ((n = input.read(buffer)) > 0) digest.update(buffer, 0, n)
+        }
+        if (digest.digest().encodeHex().toString() != manifest.sha256) {
+            throw new GradleException('Runtime payload checksum does not match payload.json')
+        }
+    }
+}
+tasks.named('preBuild').configure { dependsOn 'verifyPayload' }
